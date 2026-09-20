@@ -40,6 +40,8 @@ def container_running(name: str) -> bool:
 def stop_container(name: str) -> None:
     if container_running(name):
         docker("stop", name)
+    # A container started without --rm lingers stopped under the same name.
+    docker("rm", "-f", name, capture=True, check=False)
 
 
 def build_image(target: str, tag: str) -> None:

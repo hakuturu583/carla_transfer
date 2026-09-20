@@ -14,7 +14,7 @@ def test_yaml_roundtrip_omnidreams():
     assert cfg.resolution == (512, 288)
     assert cfg.omnidreams.frames_per_chunk == 8
     assert cfg.omnidreams.first_chunk_frames == 5
-    assert cfg.omnidreams.scene_archive is None
+    assert cfg.omnidreams.scene_archive == Path("outputs/scenes/town10.usdz")
     assert cfg.docker.container_name == "carla-transfer-omnidreams"
 
 
@@ -34,6 +34,7 @@ def test_docker_run_args_omnidreams(fake_docker):
     cfg = TransferConfig.from_yaml(CONFIGS / "omnidreams_rtx3090.yaml")
     cfg.docker.hf_cache = fake_docker / "hf"
     cfg.docker.inductor_cache = fake_docker / "inductor"
+    cfg.omnidreams.scene_archive = None
     args = ContainerManager(cfg).run_args()
     assert args[:3] == ["docker", "run", "--rm"] and "-d" in args
     assert "--gpus" in args and args[args.index("--gpus") + 1] == "all"
@@ -91,7 +92,7 @@ def test_carla_server_args(fake_docker):
 
     cfg = TransferConfig()
     args = CarlaServerManager(cfg.carla).run_args()
-    assert "-quality-level=Low" in args and "-RenderOffScreen" in args
-    assert "CarlaUE4.sh" in args and "--net=host" in args
-    cfg.carla.image = "carlasim/carla:0.10.0"
-    assert "CarlaUnreal.sh" in CarlaServerManager(cfg.carla).run_args()
+    assert "-quality-level=Epic" in args and "-RenderOffScreen" in args
+    assert "CarlaUnreal.sh" in args and "--net=host" in args
+    cfg.carla.image = "carlasim/carla:0.9.16"
+    assert "CarlaUE4.sh" in CarlaServerManager(cfg.carla).run_args()

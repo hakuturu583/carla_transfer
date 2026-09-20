@@ -20,6 +20,8 @@ class WorldModelBackend(abc.ABC):
     frames_per_chunk: int = 1
     #: Size of the very first chunk after ``open`` (OmniDreams: 5, then 8).
     first_chunk_frames: int | None = None
+    #: Whether a short trailing chunk may be sent on shutdown.
+    accepts_partial_chunk: bool = True
 
     def chunk_size(self, chunk_index: int) -> int:
         if chunk_index == 0 and self.first_chunk_frames is not None:

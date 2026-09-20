@@ -39,6 +39,7 @@ class OmniDreamsBackend(WorldModelBackend):
         )
         self._stub = vm_grpc.WorldModelServiceStub(self._channel)
         self.first_chunk_frames = self.od.first_chunk_frames
+        self.accepts_partial_chunk = False  # the server enforces 5-then-8
         self._session_id: str | None = None
         # clipgt scene archive. OmniDreams is HD-map conditioned: the server
         # rasterizes this archive's lanes/objects from the ego poses we send.

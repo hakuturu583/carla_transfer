@@ -82,9 +82,9 @@ class StreamPipeline:
     def stop(self, flush: bool = True) -> None:
         if not self._opened:
             return
-        if flush and self._chunk:
+        if flush and self._chunk and self.backend.accepts_partial_chunk:
             self._submit(self._chunk)
-            self._chunk = []
+        self._chunk = []
         self._enqueue(None)
         if self._worker:
             self._worker.join()

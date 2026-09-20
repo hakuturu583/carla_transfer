@@ -7,6 +7,8 @@ import logging
 import threading
 from pathlib import Path
 
+import numpy as np
+
 from carla_transfer.frames import Frame, encode_image
 
 log = logging.getLogger(__name__)
@@ -27,19 +29,33 @@ class WindowSink:
 
 
 class Mp4Sink:
-    """Appends frames to an mp4 with imageio-ffmpeg. Needs the ``video`` extra."""
+    """Appends frames to an H.264 mp4 (PyAV directly; the stream is sized by
+    the first frame)."""
 
     def __init__(self, path: str | Path, fps: int):
-        import imageio.v2 as iio
+        import av
 
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self.writer = iio.get_writer(str(path), fps=fps, macro_block_size=1)
+        self._av = av
+        self._container = av.open(str(path), mode="w")
+        self._stream = self._container.add_stream("libx264", rate=fps)
+        self._stream.pix_fmt = "yuv420p"
+        self._frames = 0
 
     def __call__(self, frame: Frame) -> None:
-        self.writer.append_data(frame.rgb)
+        if self._frames == 0:
+            self._stream.width = frame.width
+            self._stream.height = frame.height
+        vf = self._av.VideoFrame.from_ndarray(np.ascontiguousarray(frame.rgb), format="rgb24")
+        for packet in self._stream.encode(vf):
+            self._container.mux(packet)
+        self._frames += 1
 
     def close(self) -> None:
-        self.writer.close()
+        for packet in self._stream.encode():
+            self._container.mux(packet)
+        self._container.close()
+        log.info("mp4 closed after %d frames", self._frames)
 
 
 class MjpegSink:

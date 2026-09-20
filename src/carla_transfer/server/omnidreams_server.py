@@ -156,6 +156,44 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
             chunk_frames=manifest.num_frames_per_block,
         )
 
+    def install_embedding_cache(self, cache_dir: Path) -> None:
+        """Cache the offloaded one-shot encoder outputs (text + initial image
+        embeddings) on disk, keyed by prompt / image / resolution.
+
+        With --offload-text-encoder every scene (re)load reloads the 15 GB
+        Cosmos-Reason1 text encoder just to embed one prompt: a 16 GB peak
+        that evicts CARLA's Vulkan allocations on a shared 24 GB card (UE
+        then dies with "GameThread timed out waiting for RenderThread"). A
+        cache hit skips the encoder entirely, so a scene that was opened once
+        with the GPU to itself reopens next to CARLA at the ~12 GB steady
+        state."""
+        import hashlib
+
+        import torch
+        from omnidreams.interactive_drive.world_model import flashdreams_adapter as fa
+
+        original = fa._precompute_embeddings_from_config
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        def cached(config, manifest, *, initial_rgb, prompt):
+            h = hashlib.sha256()
+            h.update(prompt.encode("utf-8"))
+            h.update(np.ascontiguousarray(initial_rgb).tobytes())
+            h.update(
+                f"{manifest.resolution_wh}|{manifest.light_vae}|{manifest.encode_with_pixel_shuffle}".encode()
+            )
+            path = cache_dir / f"{h.hexdigest()[:24]}.pt"
+            if path.exists():
+                emb = torch.load(path, map_location=manifest.device)
+                log.info("embedding cache hit %s", path.name)
+                return emb
+            emb = original(config, manifest, initial_rgb=initial_rgb, prompt=prompt)
+            torch.save({k: (v.cpu() if v is not None else None) for k, v in emb.items()}, path)
+            log.info("embedding cache stored %s", path.name)
+            return emb
+
+        fa._precompute_embeddings_from_config = cached
+
     def load_rasterizer(self) -> None:
         """HD-map rasterizer only (no world model): serves raster-only sessions."""
         from omnidreams.interactive_drive.rasterizer import LudusConditionRasterizer
@@ -377,6 +415,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--max-message-mb", type=int, default=256)
     p.add_argument(
+        "--embedding-cache",
+        type=Path,
+        default=Path.home() / ".cache" / "carla_transfer" / "embeddings",
+        help="disk cache for per-scene text/image embeddings (empty string disables)",
+    )
+    p.add_argument(
         "--raster-only",
         action="store_true",
         help="serve HD-map condition frames only; do not load the world model",
@@ -408,6 +452,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.raster_only:
         svc.load_rasterizer()
     else:
+        if args.embedding_cache and str(args.embedding_cache):
+            svc.install_embedding_cache(args.embedding_cache)
         svc.load_model()
 
     mb = args.max_message_mb * 1024 * 1024

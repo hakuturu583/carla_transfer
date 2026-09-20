@@ -68,6 +68,19 @@ class CarlaCameraSource:
         self.sensor.destroy()
 
 
+def transform_from_rig_to_world(m: np.ndarray, z_offset: float = 0.3) -> Any:
+    """Inverse of :func:`pose_from_transform` for a 4x4 rig-to-world (FLU,
+    OpenDRIVE frame): a ``carla.Transform`` to spawn the ego at. ``z_offset``
+    lifts the vehicle so it does not spawn intersecting the road."""
+    import carla
+
+    yaw = math.degrees(math.atan2(m[1, 0], m[0, 0]))
+    return carla.Transform(
+        carla.Location(x=float(m[0, 3]), y=-float(m[1, 3]), z=float(m[2, 3]) + z_offset),
+        carla.Rotation(yaw=-yaw),
+    )
+
+
 def pose_from_transform(t: Any) -> Pose:
     """CARLA (UE4, left-handed, x-fwd y-right z-up, degrees) → right-handed
     x-fwd y-left z-up pose with an (x, y, z, w) quaternion."""

@@ -156,24 +156,67 @@ def cmd_run(args: argparse.Namespace) -> int:
     from carla_transfer.pipeline import StreamPipeline
 
     cfg = _load_config(args)
-    client = carla.Client(args.carla_host, args.carla_port)
-    client.set_timeout(20.0)
-    world = client.get_world()
-    settings = world.get_settings()
-    settings.synchronous_mode = True
-    settings.fixed_delta_seconds = 1.0 / cfg.fps
-    world.apply_settings(settings)
-
-    vehicle = _find_or_spawn_vehicle(world, args.role_name)
-    src = CarlaCameraSource(world, vehicle, cfg.width, cfg.height)
     sinks = _make_sinks(cfg, args)
     pipe = StreamPipeline(cfg, sinks=sinks)
-    try:
-        world.tick()
-        pipe.start(src.get())
-        last_report = time.monotonic()
-        while True:
+
+    # With initial_image=archive the model session does not need a CARLA
+    # frame, so open it *before* CARLA takes its share of the GPU: the
+    # OmniDreams init peak (text encoder resident, ~16 GB) plus CARLA
+    # (~6.5 GB) does not fit a 24 GB card, the steady state (~12 GB) does.
+    session_first = cfg.omnidreams.initial_image == "archive"
+    carla_mgr = None
+    if args.carla_up:
+        from carla_transfer.docker.carla import CarlaServerManager
+
+        carla_mgr = CarlaServerManager(cfg.carla)
+        if session_first:
+            carla_mgr.down()
+    if session_first:
+        placeholder = Frame(np.zeros((cfg.height, cfg.width, 3), np.uint8), 0)
+        pipe.start(placeholder)
+        log.info("model session open")
+    if carla_mgr is not None:
+        carla_mgr.up()
+        _wait_for_carla(args.carla_host, args.carla_port, timeout_s=600)
+
+    client = carla.Client(args.carla_host, args.carla_port)
+    client.set_timeout(120.0)
+    world = client.get_world()
+    settings = world.get_settings()
+    follow = args.follow
+    if not follow:
+        settings.synchronous_mode = True
+        settings.fixed_delta_seconds = 1.0 / cfg.fps
+        world.apply_settings(settings)
+
+    def step():
+        # `drive` (or another client) owns the tick in --follow mode.
+        if follow:
+            world.wait_for_tick()
+        else:
             world.tick()
+
+    spawn = None
+    if args.spawn_at_archive_start and cfg.omnidreams.scene_archive:
+        from carla_transfer.carla.source import transform_from_rig_to_world
+        from carla_transfer.hdmap.control_video import archive_trajectory
+
+        poses, _ = archive_trajectory(Path(cfg.omnidreams.scene_archive))
+        spawn = transform_from_rig_to_world(poses[0])
+        log.info("spawning ego at the archive's initial pose: %s", spawn)
+    if follow:
+        vehicle = _wait_for_vehicle(world, args.role_name, step)
+    else:
+        vehicle = _find_or_spawn_vehicle(world, args.role_name, spawn)
+    src = CarlaCameraSource(world, vehicle, cfg.width, cfg.height)
+    try:
+        first = _first_frame(step, src)
+        if not session_first:
+            pipe.start(first)
+        last_report = time.monotonic()
+        t_start = time.monotonic()
+        while not args.duration or time.monotonic() - t_start < args.duration:
+            step()
             pipe.push(src.get())
             if time.monotonic() - last_report > 5:
                 s = pipe.stats
@@ -191,23 +234,121 @@ def cmd_run(args: argparse.Namespace) -> int:
         pipe.stop()
         src.destroy()
         _close_sinks(sinks)
-        settings.synchronous_mode = False
-        world.apply_settings(settings)
+        if not follow:
+            settings.synchronous_mode = False
+            world.apply_settings(settings)
+        if carla_mgr is not None and args.carla_down:
+            carla_mgr.down()
     return 0
 
 
-def _find_or_spawn_vehicle(world, role_name: str):
+def _wait_for_carla(host: str, port: int, timeout_s: float) -> None:
+    import carla
+
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            c = carla.Client(host, port)
+            c.set_timeout(10.0)
+            c.get_world().get_map()
+            return
+        except RuntimeError as e:
+            if time.monotonic() > deadline:
+                raise TimeoutError("CARLA did not come up") from e
+            time.sleep(5)
+
+
+def _wait_for_vehicle(world, role_name: str, step, max_ticks: int = 3000):
+    for _ in range(max_ticks):
+        for a in world.get_actors().filter("vehicle.*"):
+            if a.attributes.get("role_name") == role_name:
+                return a
+        step()
+    raise RuntimeError(f"no vehicle with role_name={role_name!r} appeared")
+
+
+def _first_frame(step, src, max_ticks: int = 60):
+    """Tick until the camera delivers (sensors come up a few ticks after spawn)."""
+    import queue
+
+    for _ in range(max_ticks):
+        step()
+        try:
+            return src.get(timeout=1.0)
+        except queue.Empty:
+            continue
+    raise RuntimeError("camera delivered no frame")
+
+
+def cmd_drive(args: argparse.Namespace) -> int:
+    """Traffic-Manager driver: owns the synchronous tick; `run --follow` reads."""
+    import carla
+
+    cfg = _load_config(args)
+    client = carla.Client(args.carla_host, args.carla_port)
+    client.set_timeout(120.0)
+    world = client.get_world()
+    settings = world.get_settings()
+    settings.synchronous_mode = True
+    settings.fixed_delta_seconds = 1.0 / cfg.fps
+    world.apply_settings(settings)
+    tm = client.get_trafficmanager(args.tm_port)
+    tm.set_synchronous_mode(True)
+
+    spawn = None
+    if args.spawn_at_archive_start and cfg.omnidreams.scene_archive:
+        from carla_transfer.carla.source import transform_from_rig_to_world
+        from carla_transfer.hdmap.control_video import archive_trajectory
+
+        poses, _ = archive_trajectory(Path(cfg.omnidreams.scene_archive))
+        spawn = transform_from_rig_to_world(poses[0])
+    vehicle = _find_or_spawn_vehicle(world, args.role_name, spawn, autopilot=False)
+    vehicle.set_autopilot(True, args.tm_port)
+    if args.speed_pct:
+        tm.vehicle_percentage_speed_difference(vehicle, args.speed_pct)
+    tm.ignore_lights_percentage(vehicle, args.ignore_lights_pct)
+    log.info("hero %s on Traffic Manager (port %d) at %s", vehicle.id, args.tm_port, spawn)
+
+    period = 1.0 / cfg.fps
+    t_start = time.monotonic()
+    try:
+        while not args.duration or time.monotonic() - t_start < args.duration:
+            t0 = time.monotonic()
+            world.tick()
+            if args.realtime:
+                delay = period - (time.monotonic() - t0)
+                if delay > 0:
+                    time.sleep(delay)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        vehicle.set_autopilot(False, args.tm_port)
+        world.tick()
+        if args.destroy:
+            vehicle.destroy()
+            world.tick()
+        settings.synchronous_mode = False
+        world.apply_settings(settings)
+        tm.set_synchronous_mode(False)
+    return 0
+
+
+def _find_or_spawn_vehicle(world, role_name: str, spawn=None, autopilot: bool = True):
     for a in world.get_actors().filter("vehicle.*"):
         if a.attributes.get("role_name") == role_name:
             return a
     import random
 
-    bp = world.get_blueprint_library().filter("vehicle.tesla.model3")[0]
+    bps = world.get_blueprint_library().filter("vehicle.*")
+    bp = next((b for b in bps if "model3" in b.id or "mini" in b.id), bps[0])
     bp.set_attribute("role_name", role_name)
-    v = world.try_spawn_actor(bp, random.choice(world.get_map().get_spawn_points()))
+    if spawn is None:
+        spawn = random.choice(world.get_map().get_spawn_points())
+    v = world.try_spawn_actor(bp, spawn)
     if v is None:
-        raise RuntimeError("could not spawn ego vehicle")
-    v.set_autopilot(True)
+        raise RuntimeError(f"could not spawn ego vehicle at {spawn}")
+    if autopilot:
+        v.set_autopilot(True)
     return v
 
 
@@ -308,8 +449,40 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--carla-host", default="127.0.0.1")
     r.add_argument("--carla-port", type=int, default=2000)
     r.add_argument("--role-name", default="hero")
+    r.add_argument(
+        "--spawn-at-archive-start",
+        action="store_true",
+        help="spawn the ego at the scene archive's initial pose (rig_trajectories.json)",
+    )
+    r.add_argument("--duration", type=float, default=0.0, help="seconds to run (0 = until Ctrl-C)")
+    r.add_argument(
+        "--carla-up",
+        action="store_true",
+        help="start the CARLA container (after the model session, to fit the GPU)",
+    )
+    r.add_argument("--carla-down", action="store_true", help="stop the CARLA container at the end")
+    r.add_argument(
+        "--follow",
+        action="store_true",
+        help="do not tick or spawn: attach to the hero driven by `carla-transfer drive`",
+    )
     add_sink_args(r)
     r.set_defaults(fn=cmd_run)
+
+    d = sub.add_parser("drive")
+    d.add_argument("--carla-host", default="127.0.0.1")
+    d.add_argument("--carla-port", type=int, default=2000)
+    d.add_argument("--tm-port", type=int, default=8000)
+    d.add_argument("--role-name", default="hero")
+    d.add_argument("--spawn-at-archive-start", action="store_true")
+    d.add_argument("--duration", type=float, default=0.0)
+    d.add_argument("--speed-pct", type=float, default=0.0,
+                   help="Traffic Manager speed difference %% (negative = faster)")  # fmt: skip
+    d.add_argument("--ignore-lights-pct", type=float, default=100.0)
+    d.add_argument("--realtime", action=argparse.BooleanOptionalAction, default=True,
+                   help="pace ticks at the configured fps")  # fmt: skip
+    d.add_argument("--destroy", action="store_true", help="destroy the hero on exit")
+    d.set_defaults(fn=cmd_drive)
 
     st = sub.add_parser("selftest")
     st.add_argument("--frames", type=int, default=64)

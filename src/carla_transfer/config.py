@@ -50,17 +50,22 @@ class CarlaServerConfig:
     """CARLA simulator container. Low quality on purpose: the GPU belongs to
     the world model."""
 
-    image: str = "carlasim/carla:0.9.16"
+    image: str = "carlasim/carla:0.10.0"
     container_name: str = "carla-transfer-carla"
-    gpus: str = "all"
+    gpus: str = "device=0"
     rpc_port: int = 2000
-    quality_level: str = "Low"  # Low | Epic
+    # Low | Epic. On this host CARLA 0.10 at Low dies at start (RenderThread
+    # timeout) more often than not; Epic starts reliably and only costs
+    # 6.9 GB vs 6.3 GB, so Epic + a tiny off-screen resolution is the default.
+    quality_level: str = "Epic"
+    # Host dir mounted as UE's ~/.config/Epic (shader cache survives restarts).
+    ue_config_dir: Path = field(
+        default_factory=lambda: Path.home() / ".cache" / "carla_transfer" / "carla_config"
+    )
     # Off-screen render target; the pipeline's camera is spawned at the model
     # resolution separately, so this only bounds CARLA's own GPU cost.
-    width: int = 640
-    height: int = 360
-    # Fixed server tick rate (-benchmark -fps=N); None leaves it variable.
-    fps: int | None = 30
+    width: int = 320
+    height: int = 180
     extra_args: list[str] = field(default_factory=list)
 
 
@@ -159,7 +164,7 @@ class TransferConfig:
         docker = DockerConfig(**docker_raw)
         omni = OmniDreamsConfig(**_paths(raw.pop("omnidreams", None) or {}, "scene_archive"))
         cosmos = Cosmos3Config(**(raw.pop("cosmos3", None) or {}))
-        carla = CarlaServerConfig(**(raw.pop("carla", None) or {}))
+        carla = CarlaServerConfig(**_paths(raw.pop("carla", None) or {}, "ue_config_dir"))
         t25_raw = _paths(raw.pop("transfer25", None) or {}, "repo", "python")
         t25_raw["env"] = t25_raw.get("env") or {}
         transfer25 = Transfer25Config(**t25_raw)

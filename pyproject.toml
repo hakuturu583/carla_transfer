@@ -25,7 +25,9 @@ dependencies = [
 
 [project.optional-dependencies]
 # Client-side helpers that are heavy or platform-specific.
-carla = ["carla>=0.9.16"]
+# CARLA 0.10 ships its client as a wheel inside the server image
+# (PythonAPI/carla/dist); install it with `uv pip install <wheel>`.
+carla = []
 display = ["opencv-python>=4.8"]
 video = ["imageio>=2.34", "imageio-ffmpeg>=0.5"]
 dev = [

@@ -22,7 +22,7 @@ omnidreams:
   # clipgt scene archive for HD-map conditioning. Placeholder until the CARLA
   # map exporter exists: any archive from nvidia/omni-dreams-scenes, e.g.
   # $HF_HOME/hub/datasets--nvidia--omni-dreams-scenes/snapshots/<rev>/scenes/clipgt-0d404ff7-2b66-498c-b047-1ed8cded60d4.usdz
-  scene_archive: null
+  scene_archive: outputs/scenes/town10.usdz
   positive_prompt: >-
     Driving scene from a front-facing car camera. Urban environment with roads,
     vehicles, pedestrians, traffic signs, and buildings. Clear visibility,

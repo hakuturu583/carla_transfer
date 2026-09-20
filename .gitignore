@@ -10,3 +10,4 @@ build/
 outputs/
 *.mp4
 .env
+outputs/scenes/
