@@ -57,9 +57,8 @@ C=configs/omnidreams_rtx3090.yaml
 
 carla-transfer -c $C build omnidreams cosmos3        # docker build (fork flashdreams; vllm-omni + diffusers)
 
-# CARLA map → scene archive with a Cosmos3-rendered first frame
-carla-transfer -c $C prepare-scene --xodr Town10HD_Opt.xodr --out scenes/town10.usdz \
-    --clip-id town10 --cosmos3-args --revision fp8 --cpu-offload
+# CARLA map → scene archive with a Cosmos-Transfer2.5-rendered first frame
+carla-transfer -c $C prepare-scene --xodr Town10HD_Opt.xodr --out scenes/town10.usdz --clip-id town10
 # then set omnidreams.scene_archive: scenes/town10.usdz in the YAML
 
 carla-transfer -c $C carla up                        # CARLA off-screen, -quality-level=Low
@@ -69,13 +68,14 @@ carla-transfer -c $C down && carla-transfer -c $C carla down
 ```
 
 `prepare-scene` = `export-map` (roadgen reads the OpenDRIVE, writes the ClipGT
-layers, packed into a 240 KB archive) → HD-map control video along the
-archive's ego route (OmniDreams image in `--raster-only` mode, 101 frames @
-10 fps) → Cosmos3 transfer with the world-scenario hint → its first frame is
-written into the archive as `first_image.png`. With
+layers, packed into a 240 KB archive) → **Cosmos-Transfer2.5-2B auto-multiview**
+renders its world-scenario control video from the same ClipGT layers and
+generates a photoreal drive along the route (front camera only, one GPU) → its
+first frame is written into the archive as `first_image.png`. With
 `omnidreams.initial_image: archive` (default) OmniDreams starts from that
-image instead of CARLA's rendering. `--skip-cosmos3` stops after the archive;
-`--local` runs the raster and Cosmos3 steps in the current Python environment.
+image instead of CARLA's rendering. `--first-image none` stops after the
+archive; `--first-image cosmos3` is the alternative path through the
+OmniDreams raster-only server + Cosmos3 transfer (needs a bigger GPU).
 
 `run` connects to CARLA at `--carla-host/--carla-port`, puts the world in
 synchronous mode at `fps`, attaches a camera to the vehicle whose
@@ -149,17 +149,34 @@ geometry is touched. `hdmap/clipgt.py` drives a route (successor lanes from
 placeholder image. Verified on the 3090: Town10HD_Opt.xodr → 240 KB archive,
 loads in omnidreams' `load_scene_bundle` and ludus, 101 condition frames in 2 s.
 
+## Cosmos-Transfer2.5 on the 3090
+
+The first image comes from `nvidia/Cosmos-Transfer2.5-2B` `auto/multiview`,
+whose control input is the HD map (world-scenario videos rendered from ClipGT
+parquet by `scripts/generate_control_videos.py` in the
+[cosmos-transfer2.5](https://github.com/nvidia-cosmos/cosmos-transfer2.5)
+checkout, `transfer25.repo`). `hdmap/transfer25.py` drives that checkout's
+venv as subprocesses: render the front camera, write a one-view
+`examples/multiview.py` spec (`num_conditional_frames: 0`), run it with
+`torchrun --nproc_per_node=1`, take frame 0. Notes:
+
+- roadgen writes no `obstacle.parquet`; the native renderer requires it, so an
+  empty table with the documented schema is added.
+- The checkout carries local (uncommitted) patches: `COSMOS_EVICT_TEXT_ENCODER=1`
+  keeps the 7B Cosmos-Reason1 text encoder and the 2B denoiser from sharing
+  the card (in `transfer2` and, added here, `transfer2_multiview` inference),
+  and `world_scenario/utils/pcd_utils.py` triangulates polygons on their own
+  plane — synthetic maps have exactly flat ground, and Delaunay on RDF x-y
+  was degenerate for every intersection area.
+- Cosmos3-Nano was dropped for this step: 30 GB bf16 / 16.5 GB fp8, and no
+  FP8 GEMM on Ampere.
+
 ## Status / open points
 
 - **Not yet run on the GPU** from this repo: the docker images and the
   world-model `up`/`run`. Verified pieces: the OmniDreams server against a
   real archive with the model stubbed; the raster-only server and control
   video on the real rasterizer (flashdreams venv, RTX 3090).
-- **Cosmos3 on a 24 GB card**: Cosmos3-Nano is 30 GB bf16 / 16.5 GB fp8
-  (transformer). Only the `fp8` revision can fit, and on Ampere the FP8
-  GEMM is unavailable so diffusers runs the W8A16 dequant path — untested
-  here. `prepare-scene --cosmos3-args --revision fp8 --cpu-offload` is the
-  intended invocation; `--width/--height/--num-frames` reduce activations.
 - **Dynamic actors**: the rasterizer reads vehicle tracks from the archive
   at load time (`clipgt/obstacle.parquet`); live CARLA vehicles are not
   rendered yet. The upstream proto has `DynamicWorldState` per chunk; the

@@ -91,3 +91,23 @@ def test_export_scene_archive_layout(tiny_xodr, tmp_path):
     with zipfile.ZipFile(out) as zf:
         assert zf.read("first_image.png") == b"NEWPNG"
         assert "clipgt/lane.parquet" in zf.namelist()
+
+
+def test_transfer25_helpers(tmp_path):
+    from carla_transfer.config import Transfer25Config
+    from carla_transfer.hdmap.transfer25 import build_spec, write_empty_obstacle_parquet
+
+    path = write_empty_obstacle_parquet(tmp_path, "clip")
+    t = pq.read_table(path)
+    assert t.num_rows == 0
+    assert [f.name for f in t.schema] == ["key", "obstacle", "version"]
+    obstacle = t.schema.field("obstacle").type
+    assert {obstacle.field(i).name for i in range(obstacle.num_fields)} == {
+        "trackline_id", "center", "size", "orientation", "category",
+    }  # fmt: skip
+
+    cfg = Transfer25Config(guidance=2.5, num_steps=20)
+    spec = build_spec(cfg, tmp_path / "ws.mp4", tmp_path / "p.txt", "town")
+    assert spec["num_conditional_frames"] == 0 and spec["guidance"] == 2.5
+    assert spec["num_steps"] == 20 and set(spec) & {"rear", "cross_left"} == set()
+    assert spec["front_wide"]["control_path"].endswith("ws.mp4")

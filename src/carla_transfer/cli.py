@@ -74,7 +74,7 @@ def cmd_prepare_scene(args: argparse.Namespace) -> int:
         Path(args.out),
         _scene_spec(args),
         work_dir=Path(args.work_dir) if args.work_dir else None,
-        skip_cosmos3=args.skip_cosmos3,
+        first_image=args.first_image,
         local=args.local,
         cosmos3_args=args.cosmos3_args,
     )
@@ -268,8 +268,15 @@ def build_parser() -> argparse.ArgumentParser:
     ps = sub.add_parser("prepare-scene")
     add_map_args(ps)
     ps.add_argument("--work-dir", help="where the control video and Cosmos3 output go")
-    ps.add_argument("--skip-cosmos3", action="store_true", help="archive only, placeholder image")
-    ps.add_argument("--local", action="store_true", help="run raster + Cosmos3 in this env")
+    ps.add_argument(
+        "--first-image",
+        choices=["transfer25", "cosmos3", "none"],
+        default="transfer25",
+        help="how the archive's first image is generated (default: Cosmos-Transfer2.5)",
+    )
+    ps.add_argument(
+        "--local", action="store_true", help="cosmos3 path: run raster + Cosmos3 in this env"
+    )
     ps.add_argument(
         "--cosmos3-args", nargs=argparse.REMAINDER, default=[],
         help="extra args for carla-transfer-cosmos3 (e.g. --revision fp8 --cpu-offload)",

@@ -4,13 +4,17 @@
        packed into an OmniDreams archive (hdmap/clipgt.py).
     2. The OmniDreams image runs --raster-only and renders the HD-map control
        video along the archive's ego route (hdmap/control_video.py).
-    3. The Cosmos3 image runs transfer (world-scenario hint) on that control
-       video; the first frame of the result is written into the archive as
-       first_image.png (server/cosmos3_transfer.py).
+    3. A photoreal first frame is generated from the map and written into the
+       archive as first_image.png:
+         first_image="transfer25" (default): Cosmos-Transfer2.5-2B auto-multiview
+           with its own world-scenario renderer (hdmap/transfer25.py); no
+           step 2 needed, and it runs from the cosmos-transfer2.5 checkout.
+         first_image="cosmos3": Cosmos3 transfer on the ludus control video
+           (step 2 + server/cosmos3_transfer.py in the Cosmos3 image).
+         first_image="none": keep the placeholder.
 
-Steps 2-3 need the GPU one at a time; each container exits before the next
-starts. ``--local`` runs steps 2-3 in the current Python environment instead
-of Docker (development on a machine that has omnidreams / diffusers).
+Each GPU step runs on its own; ``--local`` runs the cosmos3 raster/transfer
+steps in the current Python environment instead of Docker.
 """
 
 from __future__ import annotations
@@ -24,8 +28,13 @@ import zipfile
 from pathlib import Path
 
 from carla_transfer.config import TransferConfig
-from carla_transfer.hdmap.clipgt import SceneSpec, export_scene_archive
+from carla_transfer.hdmap.clipgt import (
+    SceneSpec,
+    export_clipgt_dir,
+    pack_scene_archive,
+)
 from carla_transfer.hdmap.control_video import WSM_FPS, WSM_FRAMES, render_control_video
+from carla_transfer.hdmap.xodr import read_carla_xodr
 
 log = logging.getLogger(__name__)
 
@@ -127,7 +136,7 @@ def prepare_scene(
     archive: Path,
     spec: SceneSpec,
     work_dir: Path | None = None,
-    skip_cosmos3: bool = False,
+    first_image: str = "transfer25",
     local: bool = False,
     cosmos3_args: list[str] | None = None,
 ) -> Path:
@@ -135,27 +144,34 @@ def prepare_scene(
     work_dir.mkdir(parents=True, exist_ok=True)
     log.info("work dir %s", work_dir)
 
-    # 1. map → archive
+    # 1. map → clipgt dir (kept: Transfer2.5's renderer reads it) → archive
     spec.camera.width, spec.camera.height = cfg.resolution
-    export_scene_archive(xodr, archive, spec)
+    clip_dir = work_dir / "clipgt"
+    m = read_carla_xodr(xodr)
+    clip_id = export_clipgt_dir(m, spec, clip_dir)
+    pack_scene_archive(clip_dir, clip_id, spec, archive)
     log.info("archive %s (%d bytes)", archive, archive.stat().st_size)
-    if skip_cosmos3:
+
+    if first_image == "none":
         return archive
+    if first_image == "transfer25":
+        from carla_transfer.hdmap.transfer25 import first_image_from_clipgt
 
-    # 2. control video
-    control = work_dir / "control_wsm.mp4"
-    if local:
-        render_control_video_local(cfg, archive, control)
+        first = first_image_from_clipgt(cfg.transfer25, clip_dir, clip_id, work_dir)
+    elif first_image == "cosmos3":
+        control = work_dir / "control_wsm.mp4"
+        if local:
+            render_control_video_local(cfg, archive, control)
+        else:
+            render_control_video_docker(cfg, archive, control)
+        job_args = list(cosmos3_args or [])
+        first = (
+            run_cosmos3_local(work_dir, job_args)
+            if local
+            else run_cosmos3_docker(cfg, work_dir, job_args)
+        )
     else:
-        render_control_video_docker(cfg, archive, control)
-
-    # 3. Cosmos3 transfer → first image
-    job_args = list(cosmos3_args or [])
-    first = (
-        run_cosmos3_local(work_dir, job_args)
-        if local
-        else run_cosmos3_docker(cfg, work_dir, job_args)
-    )
+        raise ValueError(f"unknown first_image {first_image!r}")
     replace_in_archive(archive, "first_image.png", first.read_bytes())
-    log.info("archive %s now carries the Cosmos3 first image", archive)
+    log.info("archive %s now carries the %s first image", archive, first_image)
     return archive

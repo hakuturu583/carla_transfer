@@ -117,6 +117,24 @@ class Cosmos3Config:
 
 
 @dataclass
+class Transfer25Config:
+    """Cosmos-Transfer2.5-2B auto-multiview for the scene's first image. Runs
+    as subprocesses of a cosmos-transfer2.5 checkout (its own uv venv)."""
+
+    repo: Path = field(default_factory=lambda: Path.home() / "cosmos-transfer2.5")
+    python: Path | None = None
+    camera: str = "camera_front_wide_120fov"
+    fps: int = 10
+    guidance: float = 3.0
+    seed: int = 0
+    num_steps: int | None = None
+    prompt: str | None = None
+    evict_text_encoder: bool = True
+    disable_guardrails: bool = True
+    env: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class TransferConfig:
     """Top-level config. Load from YAML with :meth:`from_yaml`."""
 
@@ -128,6 +146,7 @@ class TransferConfig:
     carla: CarlaServerConfig = field(default_factory=CarlaServerConfig)
     omnidreams: OmniDreamsConfig = field(default_factory=OmniDreamsConfig)
     cosmos3: Cosmos3Config = field(default_factory=Cosmos3Config)
+    transfer25: Transfer25Config = field(default_factory=Transfer25Config)
     # Where the `record` sink writes mp4 files.
     output_dir: Path = field(default_factory=lambda: Path("outputs"))
 
@@ -141,11 +160,21 @@ class TransferConfig:
         omni = OmniDreamsConfig(**_paths(raw.pop("omnidreams", None) or {}, "scene_archive"))
         cosmos = Cosmos3Config(**(raw.pop("cosmos3", None) or {}))
         carla = CarlaServerConfig(**(raw.pop("carla", None) or {}))
+        t25_raw = _paths(raw.pop("transfer25", None) or {}, "repo", "python")
+        t25_raw["env"] = t25_raw.get("env") or {}
+        transfer25 = Transfer25Config(**t25_raw)
         if "backend" in raw:
             raw["backend"] = BackendKind(raw["backend"])
         if "output_dir" in raw:
             raw["output_dir"] = Path(raw["output_dir"])
-        return cls(docker=docker, carla=carla, omnidreams=omni, cosmos3=cosmos, **raw)
+        return cls(
+            docker=docker,
+            carla=carla,
+            omnidreams=omni,
+            cosmos3=cosmos,
+            transfer25=transfer25,
+            **raw,
+        )
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> TransferConfig:
