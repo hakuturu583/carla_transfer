@@ -1,0 +1,158 @@
+diff --git a/cosmos_transfer2/_src/imaginaire/auxiliary/world_scenario/utils/pcd_utils.py b/cosmos_transfer2/_src/imaginaire/auxiliary/world_scenario/utils/pcd_utils.py
+index 67b820f..8f9bfec 100644
+--- a/cosmos_transfer2/_src/imaginaire/auxiliary/world_scenario/utils/pcd_utils.py
++++ b/cosmos_transfer2/_src/imaginaire/auxiliary/world_scenario/utils/pcd_utils.py
+@@ -76,8 +76,13 @@ def triangulate_polygon_3d(vertices3d: np.ndarray) -> np.ndarray:
+     if vertices3d.shape[0] < 3:
+         return np.empty((0, 3, 3), dtype=float)
+ 
+-    # Perform Delaunay triangulation on x-y plane
+-    tri = Delaunay(vertices3d[:, :2])
++    # Perform Delaunay triangulation on the polygon's own plane: project onto
++    # the two axes with the largest extent. Vertices arrive in RDF (y down),
++    # so a perfectly flat ground polygon (z_FLU == 0 everywhere, as synthetic
++    # maps produce) has constant y and Delaunay on x-y would be degenerate.
++    extent = vertices3d.max(axis=0) - vertices3d.min(axis=0)
++    axes = np.sort(np.argsort(extent)[-2:])
++    tri = Delaunay(vertices3d[:, axes])
+ 
+     # Get the triangulated faces
+     triangles = vertices3d[tri.simplices]
+diff --git a/cosmos_transfer2/_src/predict2/text_encoders/text_encoder.py b/cosmos_transfer2/_src/predict2/text_encoders/text_encoder.py
+index 2ea3da5..0d5aa3f 100644
+--- a/cosmos_transfer2/_src/predict2/text_encoders/text_encoder.py
++++ b/cosmos_transfer2/_src/predict2/text_encoders/text_encoder.py
+@@ -69,12 +69,20 @@ class TextEncoderConfig:
+ class TextEncoder:
+     def __init__(self, config: TextEncoderConfig, device: str = "cuda"):
+         self.config = config
+-        self.device = device
++        # A 7B encoder resident on the GPU is 15 GB spent to embed one fixed
++        # prompt. On a 24 GB card that is the difference between running and
++        # not: COSMOS_TEXT_ENCODER_DEVICE=cpu keeps it in host memory and the
++        # embeddings alone cross to the GPU.
++        self.device = os.environ.get("COSMOS_TEXT_ENCODER_DEVICE", device)
+ 
+         log.info("Instantiating text encoder model...")
+         with torch.device("meta"):
+             self.model = lazy_instantiate(self.config.model_config)
+-        self.model.to_empty(device=self.device)
++        # Materialised on the host when the card cannot hold the encoder and
++        # the diffusion model at once; the encode call moves it over for the
++        # forward pass and the pipeline swaps the two around that moment.
++        home = "cpu" if os.environ.get("COSMOS_EVICT_TEXT_ENCODER") else self.device
++        self.model.to_empty(device=home)
+         if SMOKE:
+             return
+         with torch.no_grad():
+@@ -177,7 +185,7 @@ class TextEncoder:
+             else:
+                 # Do truncation:
+                 input_ids = input_ids.tolist()[:NUM_EMBEDDING_PADDING_TOKENS]
+-            input_ids = torch.LongTensor(input_ids).to(device="cuda")
++            input_ids = torch.LongTensor(input_ids).to(device=self.device)
+             input_ids_batch.append(input_ids)
+ 
+         input_ids_batch = torch.stack(input_ids_batch, dim=0)
+@@ -187,6 +195,11 @@ class TextEncoder:
+         with torch.no_grad():
+             _, outputs_batch = self.model(input_ids_batch, {})
+         hidden_states = outputs_batch["hidden_states"]
++        # Encoded; the 15 GB encoder has no further business on a 24 GB card.
++        # It walks back in by itself on the next call via the `to` above.
++        if os.environ.get("COSMOS_EVICT_TEXT_ENCODER"):
++            self.model = self.model.to("cpu")
++            torch.cuda.empty_cache()
+ 
+         # # Skip the embeddings of the system prompt
+         # hidden_states = hidden_states[:, num_system_prompt_tokens:]
+@@ -217,6 +230,9 @@ class TextEncoder:
+         else:
+             raise ValueError(f"Invalid embedding_concat_strategy: {self.config.embedding_concat_strategy}")
+ 
++        # Wherever the encoder lived, the sampler works on the GPU.
++        if torch.cuda.is_available():
++            text_embeddings = text_embeddings.to("cuda")
+         return text_embeddings
+ 
+ 
+diff --git a/cosmos_transfer2/_src/predict2_multiview/models/multiview_vid2vid_model_rectified_flow.py b/cosmos_transfer2/_src/predict2_multiview/models/multiview_vid2vid_model_rectified_flow.py
+index cb4381d..25c3596 100644
+--- a/cosmos_transfer2/_src/predict2_multiview/models/multiview_vid2vid_model_rectified_flow.py
++++ b/cosmos_transfer2/_src/predict2_multiview/models/multiview_vid2vid_model_rectified_flow.py
+@@ -509,6 +509,24 @@ def inplace_compute_text_embeddings_online_multiview(model, data_batch: dict[str
+ 
+ 
+ def compute_empty_and_negative_text_embeddings(model):
++    # 24 GB-card swap (COSMOS_EVICT_TEXT_ENCODER, see text_encoder.py): this
++    # runs inside model __init__ with the denoiser already resident, so park
++    # the denoiser on the host while the 7B encoder does its two prompts.
++    import os
++
++    swap = bool(os.environ.get("COSMOS_EVICT_TEXT_ENCODER")) and hasattr(model, "net")
++    if swap:
++        model.net.to("cpu")
++        torch.cuda.empty_cache()
++    try:
++        _compute_empty_and_negative_text_embeddings(model)
++    finally:
++        if swap:
++            model.net.to("cuda")
++            torch.cuda.empty_cache()
++
++
++def _compute_empty_and_negative_text_embeddings(model):
+     # Compute empty string embeddings for text embedding dropout
+     if model.empty_string_text_embeddings is None:
+         empty_string_data_batch = {
+diff --git a/cosmos_transfer2/_src/transfer2/inference/inference_pipeline.py b/cosmos_transfer2/_src/transfer2/inference/inference_pipeline.py
+index 21efcc3..b3e131c 100644
+--- a/cosmos_transfer2/_src/transfer2/inference/inference_pipeline.py
++++ b/cosmos_transfer2/_src/transfer2/inference/inference_pipeline.py
+@@ -490,6 +490,14 @@ class ControlVideo2WorldInference:
+ 
+         # Get text context embeddings
+         log.info("Computing prompt text embeddings...")
++        import os as _os
++        _swap = bool(_os.environ.get("COSMOS_EVICT_TEXT_ENCODER"))
++        if _swap:
++            # The encoder and the denoiser never run together, so they need
++            # never sit on the card together: the peak becomes whichever is
++            # larger instead of their sum.
++            self.model.net.to("cpu")
++            torch.cuda.empty_cache()
+         with _maybe_get_timer(self.benchmark_timer, "get_text_embeddings"):
+             if self.text_encoder_class == "T5":
+                 text_embeddings = get_t5_from_prompt(prompt, text_encoder_class="T5", cache_dir=self.cache_dir)
+@@ -508,6 +516,9 @@ class ControlVideo2WorldInference:
+                         {"ai_caption": [negative_prompt], "images": None}, input_caption_key="ai_caption"
+                     )
+                 self.neg_t5_embeddings = neg_text_embeddings
++        if _swap:
++            self.model.net.to("cuda")
++            torch.cuda.empty_cache()
+ 
+         # Process image context if provided; else will be None
+         log.info("Processing image context if available...")
+diff --git a/cosmos_transfer2/_src/transfer2_multiview/inference/inference.py b/cosmos_transfer2/_src/transfer2_multiview/inference/inference.py
+index b3ad8cf..5eef595 100644
+--- a/cosmos_transfer2/_src/transfer2_multiview/inference/inference.py
++++ b/cosmos_transfer2/_src/transfer2_multiview/inference/inference.py
+@@ -215,7 +215,17 @@ class ControlVideo2WorldInference:
+         """
+         data_batch = to_model_input(data_batch, self.model)
+         if self.model.config.text_encoder_config is not None and self.model.config.text_encoder_config.compute_online:
++            # Same 24 GB-card swap as transfer2/inference/inference_pipeline.py:
++            # the 7B text encoder and the denoiser never run together, so with
++            # COSMOS_EVICT_TEXT_ENCODER they never sit on the card together.
++            _swap = bool(os.environ.get("COSMOS_EVICT_TEXT_ENCODER"))
++            if _swap:
++                self.model.net.to("cpu")
++                torch.cuda.empty_cache()
+             self.model.inplace_compute_text_embeddings_online(data_batch)
++            if _swap:
++                self.model.net.to("cuda")
++                torch.cuda.empty_cache()
+ 
+         raw_data, x0, condition = self.model.get_data_and_condition(data_batch)
+ 
