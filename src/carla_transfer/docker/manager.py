@@ -76,7 +76,7 @@ class ContainerManager:
         caches, env. No image or command."""
         self.d.hf_cache.mkdir(parents=True, exist_ok=True)
         self.d.inductor_cache.mkdir(parents=True, exist_ok=True)
-        args = ["docker", "run", "-d" if detached else "-i", "--rm"]
+        args = ["docker", "run", "--rm"] + (["-d"] if detached else [])
         if name:
             args += ["--name", name]
         args += [
@@ -169,7 +169,7 @@ class ContainerManager:
         args = self.base_args(detached=False)
         args += ["-v", f"{work_dir.resolve()}:/work"]
         args.append(image)
-        args += ["carla-transfer-cosmos3", *job_args]
+        args += job_args  # image ENTRYPOINT is carla-transfer-cosmos3
         return args
 
     # -- lifecycle -----------------------------------------------------------

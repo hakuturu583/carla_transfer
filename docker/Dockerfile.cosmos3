@@ -1,24 +1,35 @@
-# Cosmos3 for carla_transfer: the vLLM-Omni Cosmos3 image plus diffusers
-# `main` (Cosmos3OmniModularPipeline with transfer / world-scenario control)
-# and this package, so the container can run
+# Cosmos3-Nano transfer job for carla_transfer (`carla-transfer-cosmos3`).
 #
-#   carla-transfer-cosmos3 --control /work/control_wsm.mp4 --out-dir /work/cosmos3
+# Not the vLLM-Omni image: the first image is produced by diffusers'
+# Cosmos3OmniModularPipeline with the world-scenario hint, and on a 24 GB
+# card that needs the ModelOpt FP8 checkpoint restored with the ModelOpt
+# version that produced it (0.44) plus diffusers main. See
+# src/carla_transfer/server/cosmos3_transfer.py for the full recipe
+# (measured on an RTX 3090: 4.8 GiB peak at 320x192).
 #
-# (the one-off job behind `carla-transfer prepare-scene`). The same image
-# still serves `vllm serve nvidia/Cosmos3-Nano --omni ...` for the cosmos3
-# streaming backend. Build context is the repo root.
-FROM vllm/vllm-omni:cosmos3
-ENV HF_HOME=/root/.cache/huggingface \
-    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# Build context is the repo root.
+ARG BASE_IMAGE=nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
+FROM ${BASE_IMAGE}
+ENV DEBIAN_FRONTEND=noninteractive \
+    HF_HOME=/root/.cache/huggingface \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+    UV_LINK_MODE=copy
+
+RUN apt-get update -qq \
+    && apt-get install -y -qq --no-install-recommends git ca-certificates ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=ghcr.io/astral-sh/uv:0.12.0 /uv /uvx /usr/local/bin/
 
 COPY pyproject.toml README.md /opt/carla_transfer/
 COPY src /opt/carla_transfer/src
-# --no-deps for torch-adjacent packages: keep the image's torch / transformers.
-RUN pip install --no-cache-dir \
+RUN uv venv --python 3.12 /opt/venv \
+    && VIRTUAL_ENV=/opt/venv uv pip install --torch-backend=cu130 \
+        torch torchvision \
         "diffusers @ git+https://github.com/huggingface/diffusers.git" \
-        accelerate imageio imageio-ffmpeg av \
-    && pip install --no-cache-dir --no-deps /opt/carla_transfer \
-    && pip install --no-cache-dir "grpcio>=1.60" "protobuf>=5" "PyYAML>=6" "httpx>=0.27" "roadgen>=0.1" scipy
+        transformers accelerate imageio imageio-ffmpeg av huggingface_hub \
+        "nvidia-modelopt==0.44.*" sentencepiece protobuf cosmos_guardrail \
+        /opt/carla_transfer
 
+ENV PATH="/opt/venv/bin:${PATH}"
 VOLUME ["/root/.cache/huggingface"]
-EXPOSE 8000
+ENTRYPOINT ["carla-transfer-cosmos3"]

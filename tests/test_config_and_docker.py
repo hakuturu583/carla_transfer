@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from carla_transfer.config import BackendKind, TransferConfig
-from carla_transfer.docker.manager import ContainerManager
+from carla_transfer.docker.manager import COSMOS3_IMAGE, ContainerManager
 
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 
@@ -35,7 +35,7 @@ def test_docker_run_args_omnidreams(fake_docker):
     cfg.docker.hf_cache = fake_docker / "hf"
     cfg.docker.inductor_cache = fake_docker / "inductor"
     args = ContainerManager(cfg).run_args()
-    assert args[:3] == ["docker", "run", "-d"]
+    assert args[:3] == ["docker", "run", "--rm"] and "-d" in args
     assert "--gpus" in args and args[args.index("--gpus") + 1] == "all"
     assert "-p" in args and "50051:50051" in args
     assert "carla-transfer/omnidreams:latest" in args
@@ -81,9 +81,9 @@ def test_raster_and_cosmos3_job_args(fake_docker):
     args = mgr.raster_server_args(archive, "raster")
     assert "--raster-only" in args and f"{archive}:/scenes/town.usdz:ro" in args
     job = mgr.cosmos3_job_args(fake_docker, ["--revision", "fp8"])
-    assert job[:3] == ["docker", "run", "-i"]
+    assert job[:3] == ["docker", "run", "--rm"] and "-d" not in job
     assert f"{fake_docker}:/work" in job
-    assert job[-3:] == ["carla-transfer-cosmos3", "--revision", "fp8"]
+    assert job[-3:] == [COSMOS3_IMAGE, "--revision", "fp8"]
 
 
 def test_carla_server_args(fake_docker):

@@ -270,16 +270,16 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--work-dir", help="where the control video and Cosmos3 output go")
     ps.add_argument(
         "--first-image",
-        choices=["transfer25", "cosmos3", "none"],
-        default="transfer25",
-        help="how the archive's first image is generated (default: Cosmos-Transfer2.5)",
+        choices=["cosmos3", "transfer25", "none"],
+        default="cosmos3",
+        help="how the archive's first image is generated (default: Cosmos3-Nano transfer)",
     )
     ps.add_argument(
         "--local", action="store_true", help="cosmos3 path: run raster + Cosmos3 in this env"
     )
     ps.add_argument(
         "--cosmos3-args", nargs=argparse.REMAINDER, default=[],
-        help="extra args for carla-transfer-cosmos3 (e.g. --revision fp8 --cpu-offload)",
+        help="extra args for carla-transfer-cosmos3 (e.g. --steps 20 --num-frames 33)",
     )  # fmt: skip
     ps.set_defaults(fn=cmd_prepare_scene)
 

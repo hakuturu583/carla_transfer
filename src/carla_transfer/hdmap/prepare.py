@@ -6,11 +6,15 @@
        video along the archive's ego route (hdmap/control_video.py).
     3. A photoreal first frame is generated from the map and written into the
        archive as first_image.png:
-         first_image="transfer25" (default): Cosmos-Transfer2.5-2B auto-multiview
-           with its own world-scenario renderer (hdmap/transfer25.py); no
-           step 2 needed, and it runs from the cosmos-transfer2.5 checkout.
-         first_image="cosmos3": Cosmos3 transfer on the ludus control video
-           (step 2 + server/cosmos3_transfer.py in the Cosmos3 image).
+         first_image="cosmos3" (default): Cosmos3-Nano transfer with the
+           world-scenario hint (server/cosmos3_transfer.py, fp8 + offload on
+           a 24 GB card). The control video comes from cosmos-transfer2.5's
+           world-scenario renderer when that checkout is available
+           (transfer25.repo), else from the ludus raster-only server.
+         first_image="transfer25": Cosmos-Transfer2.5-2B auto-multiview,
+           front view only — runs, but the 7-view model degrades badly with
+           one active view (verified on NVIDIA's own example). Kept for
+           multi-GPU setups.
          first_image="none": keep the placeholder.
 
 Each GPU step runs on its own; ``--local`` runs the cosmos3 raster/transfer
@@ -160,11 +164,19 @@ def prepare_scene(
         first = first_image_from_clipgt(cfg.transfer25, clip_dir, clip_id, work_dir)
     elif first_image == "cosmos3":
         control = work_dir / "control_wsm.mp4"
-        if local:
+        job_args = list(cosmos3_args or [])
+        t25 = cfg.transfer25
+        if (t25.repo / "scripts" / "generate_control_videos.py").exists():
+            # Cosmos3's WSM hint was trained on this renderer's output.
+            from carla_transfer.hdmap.transfer25 import render_world_scenario
+
+            ws = render_world_scenario(t25, clip_dir, clip_id, work_dir / "ws")
+            shutil.copy(ws, control)
+            job_args = ["--control-fps", "30", *job_args]
+        elif local:
             render_control_video_local(cfg, archive, control)
         else:
             render_control_video_docker(cfg, archive, control)
-        job_args = list(cosmos3_args or [])
         first = (
             run_cosmos3_local(work_dir, job_args)
             if local
