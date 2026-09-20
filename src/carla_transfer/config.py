@@ -46,6 +46,25 @@ class DockerConfig:
 
 
 @dataclass
+class CarlaServerConfig:
+    """CARLA simulator container. Low quality on purpose: the GPU belongs to
+    the world model."""
+
+    image: str = "carlasim/carla:0.9.16"
+    container_name: str = "carla-transfer-carla"
+    gpus: str = "all"
+    rpc_port: int = 2000
+    quality_level: str = "Low"  # Low | Epic
+    # Off-screen render target; the pipeline's camera is spawned at the model
+    # resolution separately, so this only bounds CARLA's own GPU cost.
+    width: int = 640
+    height: int = 360
+    # Fixed server tick rate (-benchmark -fps=N); None leaves it variable.
+    fps: int | None = 30
+    extra_args: list[str] = field(default_factory=list)
+
+
+@dataclass
 class OmniDreamsConfig:
     """Client-side settings for the OmniDreams `WorldModelService` gRPC server."""
 
@@ -71,6 +90,10 @@ class OmniDreamsConfig:
     scene_transfer: str = "mount"
     # clipgt camera name inside the archive.
     camera_name: str = "camera_front_wide_120fov"
+    # Initial image for the rollout: "carla" sends the first CARLA frame;
+    # "archive" uses the archive's first_image.png, i.e. the Cosmos3-rendered
+    # photo written by `carla-transfer prepare-scene`.
+    initial_image: str = "archive"
     # Server-side settings, only used by `carla-transfer up` to build the
     # container command (carla_transfer.server.omnidreams_server). The manifest
     # is an interactive-drive manifest from the fork; the server resolution
@@ -102,6 +125,7 @@ class TransferConfig:
     height: int = 288
     fps: int = 30
     docker: DockerConfig = field(default_factory=DockerConfig)
+    carla: CarlaServerConfig = field(default_factory=CarlaServerConfig)
     omnidreams: OmniDreamsConfig = field(default_factory=OmniDreamsConfig)
     cosmos3: Cosmos3Config = field(default_factory=Cosmos3Config)
     # Where the `record` sink writes mp4 files.
@@ -116,11 +140,12 @@ class TransferConfig:
         docker = DockerConfig(**docker_raw)
         omni = OmniDreamsConfig(**_paths(raw.pop("omnidreams", None) or {}, "scene_archive"))
         cosmos = Cosmos3Config(**(raw.pop("cosmos3", None) or {}))
+        carla = CarlaServerConfig(**(raw.pop("carla", None) or {}))
         if "backend" in raw:
             raw["backend"] = BackendKind(raw["backend"])
         if "output_dir" in raw:
             raw["output_dir"] = Path(raw["output_dir"])
-        return cls(docker=docker, omnidreams=omni, cosmos3=cosmos, **raw)
+        return cls(docker=docker, carla=carla, omnidreams=omni, cosmos3=cosmos, **raw)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> TransferConfig:

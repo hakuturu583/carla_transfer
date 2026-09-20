@@ -1,0 +1,38 @@
+{
+  "subjects": [],
+  "background_setting": "A city street seen from a front-facing dashcam: an asphalt road with painted lane markings and curbs, sidewalks, mid-rise buildings with shop fronts, street trees and lamp posts along both sides, parked cars at the kerb, and traffic lights at the intersections ahead.",
+  "lighting": {
+    "conditions": "Clear, bright midday sun",
+    "direction": "Sunlight from high overhead, slightly behind the camera",
+    "shadows": "Crisp, short shadows under cars, trees and buildings",
+    "illumination_effect": "Natural, evenly lit scene with realistic contrast and true-to-life colors"
+  },
+  "aesthetics": {
+    "composition": "Symmetrical dashcam framing with the road converging toward the center and buildings flanking both sides",
+    "color_scheme": "Neutral asphalt grey, white and yellow lane paint, green foliage, beige and brick building facades, blue sky",
+    "image_quality": "Sharp, high-resolution, no compression artifacts"
+  },
+  "cinematography": {
+    "camera_motion": "Smooth forward driving motion",
+    "framing": "Wide shot",
+    "camera_angle": "Eye-level",
+    "depth_of_field": "Deep",
+    "focus": "Sharp focus from the road surface to the distant buildings",
+    "lens_focal_length": "Wide-angle dashcam lens"
+  },
+  "style_medium": "Live-action video",
+  "artistic_style": "Documentary dashcam realism",
+  "context": "Dashcam footage from a car driving along a city street on a sunny day",
+  "actions": [
+    {"time": "0:00-0:10", "description": "The recording vehicle drives forward along the lane, following the road and passing buildings, trees and parked cars; the road markings and boundaries stay exactly where the control map places them."}
+  ],
+  "text_and_signage_elements": [],
+  "segments": [],
+  "transitions": [],
+  "temporal_caption": "From 0:00 to 0:10 the dashcam shows a car driving steadily along a sunlit city street, lane markings passing beneath, buildings and trees sliding by on both sides.",
+  "audio_description": "Road noise and a steady engine hum; no speech or music.",
+  "resolution": {"W": 832, "H": 480},
+  "aspect_ratio": "16,9",
+  "duration": "10s",
+  "fps": 10
+}

@@ -1,10 +1,24 @@
-# Cosmos3-Nano generator served by vLLM-Omni.
+# Cosmos3 for carla_transfer: the vLLM-Omni Cosmos3 image plus diffusers
+# `main` (Cosmos3OmniModularPipeline with transfer / world-scenario control)
+# and this package, so the container can run
 #
-# The upstream image already contains everything; this file exists so that
-# `carla-transfer build --backend cosmos3` produces a locally tagged image with
-# the same entrypoint conventions as the OmniDreams one. Build context is the
-# repo root (unused here).
+#   carla-transfer-cosmos3 --control /work/control_wsm.mp4 --out-dir /work/cosmos3
+#
+# (the one-off job behind `carla-transfer prepare-scene`). The same image
+# still serves `vllm serve nvidia/Cosmos3-Nano --omni ...` for the cosmos3
+# streaming backend. Build context is the repo root.
 FROM vllm/vllm-omni:cosmos3
-ENV HF_HOME=/root/.cache/huggingface
+ENV HF_HOME=/root/.cache/huggingface \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+COPY pyproject.toml README.md /opt/carla_transfer/
+COPY src /opt/carla_transfer/src
+# --no-deps for torch-adjacent packages: keep the image's torch / transformers.
+RUN pip install --no-cache-dir \
+        "diffusers @ git+https://github.com/huggingface/diffusers.git" \
+        accelerate imageio imageio-ffmpeg av \
+    && pip install --no-cache-dir --no-deps /opt/carla_transfer \
+    && pip install --no-cache-dir "grpcio>=1.60" "protobuf>=5" "PyYAML>=6" "httpx>=0.27" "roadgen>=0.1" scipy
+
 VOLUME ["/root/.cache/huggingface"]
 EXPOSE 8000

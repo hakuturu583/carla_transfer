@@ -16,6 +16,9 @@ dependencies = [
     "grpcio>=1.60",
     "protobuf>=5.0",
     "httpx>=0.27",
+    "roadgen>=0.1.0",
+    "pyarrow>=25.0.1",
+    "scipy>=1.15.3",
 ]
 
 [project.optional-dependencies]
@@ -33,6 +36,7 @@ dev = [
 [project.scripts]
 carla-transfer = "carla_transfer.cli:main"
 carla-transfer-server = "carla_transfer.server.omnidreams_server:main"
+carla-transfer-cosmos3 = "carla_transfer.server.cosmos3_transfer:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/carla_transfer"]

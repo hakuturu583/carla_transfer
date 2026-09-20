@@ -64,6 +64,7 @@ def _cfg(port, tmp_path):
     cfg = TransferConfig(backend=BackendKind.OMNIDREAMS, width=64, height=32)
     cfg.omnidreams.port = port
     cfg.omnidreams.positive_prompt = "sunny"
+    cfg.omnidreams.initial_image = "carla"
     scene = tmp_path / "scene.usdz"
     scene.write_bytes(b"PK-fake-clipgt")
     cfg.omnidreams.scene_archive = scene
@@ -102,6 +103,15 @@ def test_inline_scene_transfer_sends_bytes(server, tmp_path):
     with OmniDreamsBackend(cfg) as be:
         be.open(Frame(np.zeros((32, 64, 3), np.uint8), 0))
     assert svc.session_req.static_world_map.hdmap_parquets == b"PK-fake-clipgt"
+
+
+def test_initial_image_archive_sends_no_frame(server, tmp_path):
+    svc, port = server
+    cfg = _cfg(port, tmp_path)
+    cfg.omnidreams.initial_image = "archive"
+    with OmniDreamsBackend(cfg) as be:
+        be.open(Frame(np.zeros((32, 64, 3), np.uint8), 0))
+    assert len(svc.session_req.initial_frames) == 0
 
 
 def test_open_without_scene_archive_fails(server, tmp_path):

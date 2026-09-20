@@ -77,11 +77,17 @@ class OmniDreamsBackend(WorldModelBackend):
                 positive=self.od.positive_prompt, negative=self.od.negative_prompt
             ),
             camera_specs=[self._camera_spec(w, h, self.od.camera_name)],
-            initial_frames=[
-                video_model_pb2.Image(
-                    data=encode_image(frame.rgb, "PNG"), format=video_model_pb2.PNG
-                )
-            ],
+            # With initial_image="archive" no frame is sent and the server
+            # keeps the archive's first_image.png (the Cosmos3 render).
+            initial_frames=(
+                [
+                    video_model_pb2.Image(
+                        data=encode_image(frame.rgb, "PNG"), format=video_model_pb2.PNG
+                    )
+                ]
+                if self.od.initial_image == "carla"
+                else []
+            ),
             rig_to_camera=[_pose_pb(Pose())],
             random_seed=self.od.random_seed,
         )

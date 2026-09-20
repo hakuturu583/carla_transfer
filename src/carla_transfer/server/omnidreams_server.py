@@ -23,6 +23,12 @@ Protocol mapping:
                      initial chunk), every later call 8.
   close_session      resets the rollout and frees the scene.
 
+  DebugOptions.skip_video_generation starts a *raster-only* session: chunks
+  return the HD-map condition frames (in hdmap_condition_frames) without
+  touching the world model, any chunk size is accepted, and the server can
+  run without the model at all (--raster-only). This is how the control
+  video for the Cosmos3 initial image is produced.
+
 One session at a time: there is one GPU.
 """
 
@@ -77,10 +83,19 @@ SCENE_REF_PREFIX = b"scene://"
 
 
 class _Session:
-    def __init__(self, session_id: str, scene_path: Path, owns_file: bool):
+    def __init__(
+        self,
+        session_id: str,
+        scene_path: Path,
+        owns_file: bool,
+        raster_only: bool = False,
+        return_hdmap: bool = False,
+    ):
         self.session_id = session_id
         self.scene_path = scene_path
         self.owns_file = owns_file
+        self.raster_only = raster_only
+        self.return_hdmap = return_hdmap
         self.chunks_rendered = 0
 
 
@@ -90,6 +105,7 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
         self._lock = threading.Lock()
         self._session: _Session | None = None
         self._backend = None
+        self._rasterizer = None  # raster-only sessions
         self._raster = None
         self._chunk = None
         self._manifest = None
@@ -99,23 +115,10 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
     def load_model(self) -> None:
         """Build the world model and run its warmup (compile / CUDA graphs)."""
         from omnidreams.interactive_drive.backends.world_model import WorldModelRenderBackend
-        from omnidreams.interactive_drive.cli import resolve_manifest_path
-        from omnidreams.interactive_drive.config import ChunkConfig, RasterConfig
-        from omnidreams.interactive_drive.world_model.manifest import load_world_model_manifest
 
-        manifest = load_world_model_manifest(resolve_manifest_path(self.opts.manifest))
-        if self.opts.resolution_wh is not None:
-            manifest = dataclasses.replace(manifest, resolution_wh=self.opts.resolution_wh)
-        if self.opts.fps is not None:
-            manifest = dataclasses.replace(manifest, fps=self.opts.fps)
+        self._configure()
+        manifest = self._manifest
         w, h = manifest.resolution_wh
-        self._manifest = manifest
-        self._raster = RasterConfig(width=w, height=h)
-        self._chunk = ChunkConfig(
-            fps=manifest.fps,
-            initial_chunk_frames=INITIAL_CHUNK_FRAMES,
-            chunk_frames=manifest.num_frames_per_block,
-        )
         log.info(
             "loading world model manifest=%s res=%dx%d fps=%d chunk=%d offload_text_encoder=%s",
             self.opts.manifest,
@@ -133,6 +136,34 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
         )
         self._backend.warmup_model()
         log.info("world model ready")
+
+    def _configure(self) -> None:
+        from omnidreams.interactive_drive.cli import resolve_manifest_path
+        from omnidreams.interactive_drive.config import ChunkConfig, RasterConfig
+        from omnidreams.interactive_drive.world_model.manifest import load_world_model_manifest
+
+        manifest = load_world_model_manifest(resolve_manifest_path(self.opts.manifest))
+        if self.opts.resolution_wh is not None:
+            manifest = dataclasses.replace(manifest, resolution_wh=self.opts.resolution_wh)
+        if self.opts.fps is not None:
+            manifest = dataclasses.replace(manifest, fps=self.opts.fps)
+        w, h = manifest.resolution_wh
+        self._manifest = manifest
+        self._raster = RasterConfig(width=w, height=h)
+        self._chunk = ChunkConfig(
+            fps=manifest.fps,
+            initial_chunk_frames=INITIAL_CHUNK_FRAMES,
+            chunk_frames=manifest.num_frames_per_block,
+        )
+
+    def load_rasterizer(self) -> None:
+        """HD-map rasterizer only (no world model): serves raster-only sessions."""
+        from omnidreams.interactive_drive.rasterizer import LudusConditionRasterizer
+
+        if self._raster is None:
+            self._configure()
+        self._rasterizer = LudusConditionRasterizer(self._raster)
+        log.info("rasterizer ready (%dx%d)", *self._manifest.resolution_wh)
 
     @property
     def resolution_wh(self) -> tuple[int, int]:
@@ -168,15 +199,28 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
                 scene = dataclasses.replace(
                     scene, initial_rgb=self._fit(decode_image(request.initial_frames[0].data))
                 )
+            raster_only = bool(request.debug_options.skip_video_generation)
+            return_hdmap = raster_only or bool(request.debug_options.return_hdmap_frames)
             log.info(
-                "session %s: scene=%s camera=%s prompt=%r",
+                "session %s: scene=%s camera=%s raster_only=%s prompt=%r",
                 session_id,
                 scene.scene_id,
                 camera,
+                raster_only,
                 scene.prompt[:60],
             )
-            self._backend.load_scene(scene)
-            self._session = _Session(session_id, scene_path, owns_file)
+            if raster_only:
+                if self._rasterizer is None:
+                    self.load_rasterizer()
+                self._rasterizer.load_scene(scene)
+            else:
+                if self._backend is None:
+                    context.abort(
+                        grpc.StatusCode.FAILED_PRECONDITION,
+                        "server runs --raster-only; set debug_options.skip_video_generation",
+                    )
+                self._backend.load_scene(scene)
+            self._session = _Session(session_id, scene_path, owns_file, raster_only, return_hdmap)
             return video_model_pb2.SessionId(session_id=session_id)
 
     def render_video_chunk(self, request, context):
@@ -188,7 +232,7 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
                 context.abort(grpc.StatusCode.NOT_FOUND, "no such session")
             poses_pb = request.rig_trajectory.poses
             expected = INITIAL_CHUNK_FRAMES if s.chunks_rendered == 0 else self._chunk.chunk_frames
-            if len(poses_pb) != expected:
+            if not s.raster_only and len(poses_pb) != expected:
                 context.abort(
                     grpc.StatusCode.INVALID_ARGUMENT,
                     f"chunk {s.chunks_rendered} needs {expected} poses, got {len(poses_pb)}",
@@ -218,24 +262,30 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
                     roll_rad=roll,
                 ),
             )
-            if s.chunks_rendered == 0:
-                out = self._backend.render_first_chunk(traj)
+            hdmap_frames: list = []
+            if s.raster_only:
+                raster = self._rasterizer.render_chunk(poses, ts)
+                rgb_frames: list = []
+                hdmap_frames = [np.asarray(f.rgb_host_uint8) for f in raster.frames]
             else:
-                out = self._backend.render_next_chunk(traj)
+                if s.chunks_rendered == 0:
+                    out = self._backend.render_first_chunk(traj)
+                else:
+                    out = self._backend.render_next_chunk(traj)
+                # In the world-model path PresentedFrame.rgb_host_uint8 is the
+                # HD-map *condition* frame; the generated image is
+                # model_rgb_host_uint8 (see backends/world_model.py _merge).
+                rgb_frames = [np.asarray(f.model_rgb_host_uint8) for f in out.frames]
+                if s.return_hdmap:
+                    hdmap_frames = [np.asarray(f.rgb_host_uint8) for f in out.frames]
             s.chunks_rendered += 1
 
-            frames = [
-                video_model_pb2.Image(
-                    data=encode_image(np.asarray(f.rgb_host_uint8), "JPEG", self.opts.jpeg_quality),
-                    format=video_model_pb2.JPEG,
-                )
-                for f in out.frames
-            ]
             return video_model_pb2.VideoChunkReturn(
                 camera_outputs=[
                     video_model_pb2.CameraOutput(
                         camera_logical_id="front",
-                        rgb_frames=frames,
+                        rgb_frames=[self._jpeg(f) for f in rgb_frames],
+                        hdmap_condition_frames=[self._png(f) for f in hdmap_frames],
                     )
                 ]
             )
@@ -248,6 +298,16 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
 
     # -- helpers -------------------------------------------------------------
 
+    def _jpeg(self, rgb: np.ndarray) -> video_model_pb2.Image:
+        return video_model_pb2.Image(
+            data=encode_image(rgb, "JPEG", self.opts.jpeg_quality), format=video_model_pb2.JPEG
+        )
+
+    @staticmethod
+    def _png(rgb: np.ndarray) -> video_model_pb2.Image:
+        # Condition frames are flat-colour line art: PNG is small and exact.
+        return video_model_pb2.Image(data=encode_image(rgb, "PNG"), format=video_model_pb2.PNG)
+
     def _close_locked(self) -> None:
         assert self._session is not None
         log.info(
@@ -256,7 +316,8 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
             self._session.chunks_rendered,
         )
         try:
-            self._backend.reset()
+            if not self._session.raster_only and self._backend is not None:
+                self._backend.reset()
         finally:
             if self._session.owns_file:
                 try:
@@ -315,6 +376,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="directory that scene://<file> references resolve against",
     )
     p.add_argument("--max-message-mb", type=int, default=256)
+    p.add_argument(
+        "--raster-only",
+        action="store_true",
+        help="serve HD-map condition frames only; do not load the world model",
+    )
     return p
 
 
@@ -339,7 +405,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     svc = OmniDreamsWorldModelService(opts)
-    svc.load_model()
+    if args.raster_only:
+        svc.load_rasterizer()
+    else:
+        svc.load_model()
 
     mb = args.max_message_mb * 1024 * 1024
     server = grpc.server(

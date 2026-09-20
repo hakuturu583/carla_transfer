@@ -34,7 +34,67 @@ def _load_config(args: argparse.Namespace) -> TransferConfig:
 def cmd_build(args: argparse.Namespace) -> int:
     from carla_transfer.docker import ContainerManager
 
-    ContainerManager(_load_config(args)).build(tag=args.tag)
+    mgr = ContainerManager(_load_config(args))
+    for target in args.targets or [None]:
+        mgr.build(target=target, tag=args.tag if len(args.targets or []) <= 1 else None)
+    return 0
+
+
+def _scene_spec(args: argparse.Namespace):
+    from carla_transfer.hdmap import SceneSpec
+
+    spec = SceneSpec(clip_id=args.clip_id, fps=args.fps, speed_mps=args.speed)
+    if args.route:
+        spec.route = args.route.split(",")
+    if args.start_lane:
+        spec.start_lane = args.start_lane
+    if args.prompt:
+        spec.prompt = args.prompt
+    return spec
+
+
+def cmd_export_map(args: argparse.Namespace) -> int:
+    from carla_transfer.hdmap import export_scene_archive
+
+    cfg = _load_config(args)
+    spec = _scene_spec(args)
+    spec.camera.width, spec.camera.height = cfg.resolution
+    out = export_scene_archive(args.xodr, args.out, spec)
+    print(out)
+    return 0
+
+
+def cmd_prepare_scene(args: argparse.Namespace) -> int:
+    from carla_transfer.hdmap.prepare import prepare_scene
+
+    cfg = _load_config(args)
+    out = prepare_scene(
+        cfg,
+        Path(args.xodr),
+        Path(args.out),
+        _scene_spec(args),
+        work_dir=Path(args.work_dir) if args.work_dir else None,
+        skip_cosmos3=args.skip_cosmos3,
+        local=args.local,
+        cosmos3_args=args.cosmos3_args,
+    )
+    print(out)
+    return 0
+
+
+def cmd_carla(args: argparse.Namespace) -> int:
+    from carla_transfer.docker.carla import CarlaServerManager
+
+    mgr = CarlaServerManager(_load_config(args).carla)
+    if args.action == "up":
+        if args.dry_run:
+            print(" ".join(mgr.run_args()))
+        else:
+            mgr.up()
+    elif args.action == "down":
+        mgr.down()
+    else:
+        sys.stdout.write(mgr.logs())
     return 0
 
 
@@ -187,8 +247,39 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     b = sub.add_parser("build")
+    b.add_argument("targets", nargs="*", help="omnidreams / cosmos3 (default: config backend)")
     b.add_argument("--tag")
     b.set_defaults(fn=cmd_build)
+
+    def add_map_args(sp):
+        sp.add_argument("--xodr", required=True, help="CARLA OpenDRIVE file")
+        sp.add_argument("--out", required=True, help="output scene archive (.usdz)")
+        sp.add_argument("--clip-id", default="carla")
+        sp.add_argument("--start-lane", help="roadgen lane id to start from (default: first)")
+        sp.add_argument("--route", help="comma-separated roadgen lane ids")
+        sp.add_argument("--speed", type=float, default=8.0, help="ego speed m/s")
+        sp.add_argument("--fps", type=float, default=30.0)
+        sp.add_argument("--prompt", help="default scene prompt stored in the archive")
+
+    em = sub.add_parser("export-map")
+    add_map_args(em)
+    em.set_defaults(fn=cmd_export_map)
+
+    ps = sub.add_parser("prepare-scene")
+    add_map_args(ps)
+    ps.add_argument("--work-dir", help="where the control video and Cosmos3 output go")
+    ps.add_argument("--skip-cosmos3", action="store_true", help="archive only, placeholder image")
+    ps.add_argument("--local", action="store_true", help="run raster + Cosmos3 in this env")
+    ps.add_argument(
+        "--cosmos3-args", nargs=argparse.REMAINDER, default=[],
+        help="extra args for carla-transfer-cosmos3 (e.g. --revision fp8 --cpu-offload)",
+    )  # fmt: skip
+    ps.set_defaults(fn=cmd_prepare_scene)
+
+    ca = sub.add_parser("carla")
+    ca.add_argument("action", choices=["up", "down", "logs"])
+    ca.add_argument("--dry-run", action="store_true")
+    ca.set_defaults(fn=cmd_carla)
 
     u = sub.add_parser("up")
     u.add_argument("--dry-run", action="store_true", help="print the docker run command")

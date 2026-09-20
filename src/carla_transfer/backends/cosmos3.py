@@ -14,6 +14,7 @@ import json
 import logging
 import time
 from collections.abc import Sequence
+from pathlib import Path
 
 import httpx
 import numpy as np
@@ -93,11 +94,12 @@ class Cosmos3Backend(WorldModelBackend):
 
 
 def _encode_mp4(rgbs: list[np.ndarray], fps: int) -> bytes:
-    import imageio.v3 as iio
+    import tempfile
 
-    buf = io.BytesIO()
-    iio.imwrite(buf, np.stack(rgbs), extension=".mp4", fps=fps, codec="libx264", macro_block_size=1)
-    return buf.getvalue()
+    from carla_transfer.hdmap.control_video import write_video
+
+    with tempfile.TemporaryDirectory() as tmp:
+        return write_video(rgbs, Path(tmp) / "chunk.mp4", fps).read_bytes()
 
 
 def _decode_mp4(data: bytes) -> list[np.ndarray]:

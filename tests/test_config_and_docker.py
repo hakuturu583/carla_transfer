@@ -69,3 +69,29 @@ def test_docker_run_args_cosmos3(fake_docker):
     assert "8000:8000" in args
     assert "vllm/vllm-omni:cosmos3" in args
     assert "nvidia/Cosmos3-Nano" in args
+
+
+def test_raster_and_cosmos3_job_args(fake_docker):
+    cfg = TransferConfig.from_yaml(CONFIGS / "omnidreams_rtx3090.yaml")
+    cfg.docker.hf_cache = fake_docker / "hf"
+    cfg.docker.inductor_cache = fake_docker / "inductor"
+    archive = fake_docker / "town.usdz"
+    archive.write_bytes(b"x")
+    mgr = ContainerManager(cfg)
+    args = mgr.raster_server_args(archive, "raster")
+    assert "--raster-only" in args and f"{archive}:/scenes/town.usdz:ro" in args
+    job = mgr.cosmos3_job_args(fake_docker, ["--revision", "fp8"])
+    assert job[:3] == ["docker", "run", "-i"]
+    assert f"{fake_docker}:/work" in job
+    assert job[-3:] == ["carla-transfer-cosmos3", "--revision", "fp8"]
+
+
+def test_carla_server_args(fake_docker):
+    from carla_transfer.docker.carla import CarlaServerManager
+
+    cfg = TransferConfig()
+    args = CarlaServerManager(cfg.carla).run_args()
+    assert "-quality-level=Low" in args and "-RenderOffScreen" in args
+    assert "CarlaUE4.sh" in args and "--net=host" in args
+    cfg.carla.image = "carlasim/carla:0.10.0"
+    assert "CarlaUnreal.sh" in CarlaServerManager(cfg.carla).run_args()
