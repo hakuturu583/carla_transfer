@@ -1,0 +1,46 @@
+# Alternative to `carla-transfer up`: docker compose --profile omnidreams up
+services:
+  omnidreams:
+    profiles: ["omnidreams"]
+    build:
+      context: .
+      dockerfile: Dockerfile.omnidreams
+    image: carla-transfer/omnidreams:latest
+    container_name: carla-transfer-omnidreams
+    ipc: host
+    shm_size: 16g
+    ports: ["50051:50051"]
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
+      - ~/.cache/carla_transfer/torchinductor:/root/.cache/torchinductor
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  cosmos3:
+    profiles: ["cosmos3"]
+    image: vllm/vllm-omni:cosmos3
+    container_name: carla-transfer-cosmos3
+    ipc: host
+    ports: ["8000:8000"]
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - ${HF_HOME:-~/.cache/huggingface}:/root/.cache/huggingface
+    command: >
+      vllm serve nvidia/Cosmos3-Nano --omni
+      --model-class-name Cosmos3OmniDiffusersPipeline
+      --allowed-local-media-path / --port 8000 --init-timeout 1800
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

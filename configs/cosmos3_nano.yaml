@@ -1,0 +1,19 @@
+# Cosmos3-Nano via vLLM-Omni. Offline quality path; not real-time on one 3090.
+backend: cosmos3
+width: 832
+height: 480
+fps: 24
+docker:
+  image: vllm/vllm-omni:cosmos3
+  container_name: carla-transfer-cosmos3
+  startup_timeout_s: 1800
+cosmos3:
+  base_url: http://127.0.0.1:8000
+  model: nvidia/Cosmos3-Nano
+  num_frames: 5
+  num_inference_steps: 4
+  guidance_scale: 6.0
+  prompt: >-
+    Photorealistic dashcam footage of city driving, natural lighting,
+    realistic materials, crisp shadows.
+  negative_prompt: blurry, distorted, low quality, cartoon, video game

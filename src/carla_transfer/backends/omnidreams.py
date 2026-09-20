@@ -1,0 +1,145 @@
+"""gRPC client for the OmniDreams ``WorldModelService`` (flashdreams).
+
+The server is ``python -m omnidreams.grpc.server`` inside the container
+(see docker/Dockerfile). Wire format is the upstream proto, vendored under
+``carla_transfer.protos.omnidreams``.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from collections.abc import Sequence
+
+import grpc
+
+from carla_transfer.backends.base import WorldModelBackend
+from carla_transfer.config import TransferConfig
+from carla_transfer.frames import Frame, Pose, decode_image, encode_image
+from carla_transfer.protos.omnidreams import camera_pb2, common_pb2, video_model_pb2
+from carla_transfer.protos.omnidreams import video_model_pb2_grpc as vm_grpc
+
+log = logging.getLogger(__name__)
+
+CAMERA_ID = "front"
+
+
+class OmniDreamsBackend(WorldModelBackend):
+    def __init__(self, config: TransferConfig):
+        self.config = config
+        self.od = config.omnidreams
+        self.frames_per_chunk = self.od.frames_per_chunk
+        mb = self.od.max_message_mb * 1024 * 1024
+        self._channel = grpc.insecure_channel(
+            f"{self.od.host}:{self.od.port}",
+            options=[
+                ("grpc.max_send_message_length", mb),
+                ("grpc.max_receive_message_length", mb),
+            ],
+        )
+        self._stub = vm_grpc.WorldModelServiceStub(self._channel)
+        self._session_id: str | None = None
+        # TODO(details pending): HD map source. OmniDreams is HDMap-conditioned;
+        # the CARLA map must be exported to the parquet layout the server
+        # expects and passed here. Empty bytes lets the server fall back to its
+        # default scene when it supports that.
+        self.hdmap_parquets: bytes = b""
+
+    # -- lifecycle -----------------------------------------------------------
+
+    def wait_ready(self, timeout_s: float) -> None:
+        deadline = time.monotonic() + timeout_s
+        while True:
+            try:
+                v = self._stub.get_version(common_pb2.Empty(), timeout=5)
+                log.info("OmniDreams server ready: %s", v)
+                return
+            except grpc.RpcError as e:
+                if time.monotonic() > deadline:
+                    raise TimeoutError("OmniDreams server did not come up") from e
+                time.sleep(2)
+
+    def open(self, initial_frame: Frame) -> None:
+        w, h = self.config.resolution
+        frame = initial_frame.resized(w, h)
+        req = video_model_pb2.SessionRequest(
+            static_world_map=video_model_pb2.StaticWorldMap(hdmap_parquets=self.hdmap_parquets),
+            text_prompt=video_model_pb2.TextPrompt(
+                positive=self.od.positive_prompt, negative=self.od.negative_prompt
+            ),
+            camera_specs=[self._camera_spec(w, h)],
+            initial_frames=[
+                video_model_pb2.Image(
+                    data=encode_image(frame.rgb, "PNG"), format=video_model_pb2.PNG
+                )
+            ],
+            rig_to_camera=[_pose_pb(Pose())],
+            random_seed=self.od.random_seed,
+        )
+        self._session_id = self._stub.start_session(req).session_id
+        log.info("OmniDreams session %s opened at %dx%d", self._session_id, w, h)
+
+    def generate(self, sim_frames: Sequence[Frame]) -> list[Frame]:
+        if self._session_id is None:
+            raise RuntimeError("generate() before open()")
+        traj = common_pb2.Trajectory(
+            poses=[
+                common_pb2.PoseAtTime(pose=_pose_pb(f.pose or Pose()), timestamp_us=f.timestamp_us)
+                for f in sim_frames
+            ]
+        )
+        req = video_model_pb2.VideoChunkRequest(
+            session_id=video_model_pb2.SessionId(session_id=self._session_id),
+            rig_trajectory=traj,
+            # TODO(details pending): populate from CARLA actors (vehicles,
+            # walkers) so the model renders dynamic agents.
+            dynamic_state=video_model_pb2.DynamicWorldState(),
+        )
+        ret = self._stub.render_video_chunk(req)
+        out: list[Frame] = []
+        for cam in ret.camera_outputs:
+            if cam.camera_logical_id not in (CAMERA_ID, ""):
+                continue
+            for i, img in enumerate(cam.rgb_frames):
+                ts = sim_frames[min(i, len(sim_frames) - 1)].timestamp_us
+                out.append(Frame(decode_image(img.data), ts, None, {"generated": True}))
+        return out
+
+    def close(self) -> None:
+        if self._session_id is not None:
+            try:
+                self._stub.close_session(
+                    video_model_pb2.SessionCloseRequest(session_id=self._session_id), timeout=30
+                )
+            except grpc.RpcError as e:
+                log.warning("close_session failed: %s", e)
+            self._session_id = None
+        self._channel.close()
+
+    # -- helpers -------------------------------------------------------------
+
+    @staticmethod
+    def _camera_spec(w: int, h: int, fov_deg: float = 90.0) -> camera_pb2.CameraSpec:
+        import math
+
+        f = (w / 2) / math.tan(math.radians(fov_deg) / 2)
+        return camera_pb2.CameraSpec(
+            opencv_pinhole_param=camera_pb2.OpenCVPinholeCameraParam(
+                principal_point_x=w / 2,
+                principal_point_y=h / 2,
+                focal_length_x=f,
+                focal_length_y=f,
+            ),
+            logical_id=CAMERA_ID,
+            resolution_w=w,
+            resolution_h=h,
+            shutter_type=camera_pb2.GLOBAL,
+        )
+
+
+def _pose_pb(p: Pose) -> common_pb2.Pose:
+    x, y, z = p.xyz
+    qx, qy, qz, qw = p.quat_xyzw
+    return common_pb2.Pose(
+        vec=common_pb2.Vec3(x=x, y=y, z=z), quat=common_pb2.Quat(x=qx, y=qy, z=qz, w=qw)
+    )

@@ -1,0 +1,9 @@
+# Cosmos3-Nano generator served by vLLM-Omni.
+#
+# The upstream image already contains everything; this file exists so that
+# `carla-transfer build --backend cosmos3` produces a locally tagged image with
+# the same entrypoint conventions as the OmniDreams one.
+FROM vllm/vllm-omni:cosmos3
+ENV HF_HOME=/root/.cache/huggingface
+VOLUME ["/root/.cache/huggingface"]
+EXPOSE 8000

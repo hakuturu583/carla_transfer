@@ -1,0 +1,22 @@
+# OmniDreams on a single RTX 3090, client-side frames at 512x288 @ 30 fps.
+backend: omnidreams
+width: 512
+height: 288
+fps: 30
+docker:
+  image: carla-transfer/omnidreams:latest
+  container_name: carla-transfer-omnidreams
+  env:
+    # HF token with read access to nvidia/omni-dreams-models. Prefer
+    # `export HF_TOKEN=...` in the shell; it is picked up by the entrypoint.
+    # HF_TOKEN: hf_xxx
+  startup_timeout_s: 1800
+omnidreams:
+  port: 50051
+  frames_per_chunk: 8
+  pipeline_config: omnidreams-sv-2steps-chunk2-loc6-lightvae-lighttae
+  server_resolution: 480p
+  positive_prompt: >-
+    Driving scene from a front-facing car camera. Urban environment with roads,
+    vehicles, pedestrians, traffic signs, and buildings. Clear visibility,
+    realistic lighting, photorealistic quality. High resolution dashcam footage.
