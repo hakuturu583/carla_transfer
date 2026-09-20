@@ -109,7 +109,42 @@ def export_clipgt_dir(m, spec: SceneSpec, out_dir: Path) -> str:
     out_dir.mkdir(parents=True, exist_ok=True)
     scenario_path = out_dir / "scenario.yaml"
     scenario_path.write_text(yaml.safe_dump(scenario, sort_keys=False))
-    return m.export_clipgt(str(out_dir), scenario=str(scenario_path))
+    clip_id = m.export_clipgt(str(out_dir), scenario=str(scenario_path))
+    normalize_lane_line_styles(out_dir, clip_id)
+    return clip_id
+
+
+# roadgen's lane_line style tokens → the ClipGT vocabulary the NVIDIA loaders
+# know (config_color_geometry_laneline.json). Unknown tokens render as the
+# generic "OTHER" colour instead of white/yellow dashed/double lines.
+LANE_LINE_STYLE_MAP = {
+    "DASHED_SINGLE": "LONG_DASHED_SINGLE",
+    "SOLID_DOUBLE": "SOLID_GROUP",
+    "DASHED_DOUBLE": "LONG_DASHED_SINGLE",
+}
+
+
+def normalize_lane_line_styles(clip_dir: Path, clip_id: str) -> int:
+    """Rewrite ``{clip_id}.lane_line.parquet`` styles in place. Returns the
+    number of rows changed."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    path = clip_dir / f"{clip_id}.lane_line.parquet"
+    if not path.exists():
+        return 0
+    table = pq.read_table(path)
+    rows = table.to_pylist()
+    changed = 0
+    for r in rows:
+        styles = r["lane_line"].get("styles") or []
+        new = [LANE_LINE_STYLE_MAP.get(s, s) for s in styles]
+        if new != styles:
+            r["lane_line"]["styles"] = new
+            changed += 1
+    if changed:
+        pq.write_table(pa.Table.from_pylist(rows, schema=table.schema), path)
+    return changed
 
 
 def rig_trajectory_from_egomotion(parquet_path: Path) -> dict:

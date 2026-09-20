@@ -111,3 +111,16 @@ def test_transfer25_helpers(tmp_path):
     assert spec["num_conditional_frames"] == 0 and spec["guidance"] == 2.5
     assert spec["num_steps"] == 20 and set(spec) & {"rear", "cross_left"} == set()
     assert spec["front_wide"]["control_path"].endswith("ws.mp4")
+
+
+def test_lane_line_styles_are_normalized(tiny_xodr, tmp_path):
+    from carla_transfer.hdmap.clipgt import export_clipgt_dir
+    from carla_transfer.hdmap.xodr import read_carla_xodr
+
+    m = read_carla_xodr(tiny_xodr)
+    clip_id = export_clipgt_dir(m, SceneSpec(clip_id="tiny"), tmp_path)
+    rows = pq.read_table(tmp_path / f"{clip_id}.lane_line.parquet").to_pylist()
+    styles = {s for r in rows for s in r["lane_line"]["styles"]}
+    assert styles and styles <= {
+        "SOLID_SINGLE", "LONG_DASHED_SINGLE", "SOLID_GROUP", "SOLID_DASHED", "DASHED_SOLID",
+    }  # fmt: skip
