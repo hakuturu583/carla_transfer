@@ -157,7 +157,22 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     cfg = _load_config(args)
     sinks = _make_sinks(cfg, args)
-    pipe = StreamPipeline(cfg, sinks=sinks)
+    # OmniDreams' KV cache needs consecutive poses, and the first chunk's
+    # compile would otherwise skip tens of seconds of driving, so by default
+    # nothing is dropped:
+    #   --sync-to-model  this process ticks; push() blocks while the model is
+    #                    behind, so the world is paced at the model's rate.
+    #   --follow         another process ticks (carla-transfer drive); chunks
+    #                    queue up unboundedly and the model works through the
+    #                    backlog, so keep the driver's --tick-fps below the
+    #                    model's throughput.
+    #   --drop-stale     real-time at any cost: skip chunks when behind.
+    pipe = StreamPipeline(
+        cfg,
+        sinks=sinks,
+        drop_stale=args.drop_stale,
+        max_pending_chunks=1 if args.sync_to_model else 100_000,
+    )
 
     # With initial_image=archive the model session does not need a CARLA
     # frame, so open it *before* CARLA takes its share of the GPU: the
@@ -183,6 +198,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     client.set_timeout(120.0)
     world = client.get_world()
     settings = world.get_settings()
+    if args.follow and args.sync_to_model:
+        raise SystemExit("--sync-to-model ticks and drives itself; drop --follow")
     follow = args.follow
     if not follow:
         settings.synchronous_mode = True
@@ -309,7 +326,7 @@ def cmd_drive(args: argparse.Namespace) -> int:
     tm.ignore_lights_percentage(vehicle, args.ignore_lights_pct)
     log.info("hero %s on Traffic Manager (port %d) at %s", vehicle.id, args.tm_port, spawn)
 
-    period = 1.0 / cfg.fps
+    period = 1.0 / (args.tick_fps or cfg.fps)
     t_start = time.monotonic()
     try:
         while not args.duration or time.monotonic() - t_start < args.duration:
@@ -464,7 +481,17 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument(
         "--follow",
         action="store_true",
-        help="do not tick or spawn: attach to the hero driven by `carla-transfer drive`",
+        help="do not spawn: attach to the hero driven by `carla-transfer drive`",
+    )
+    r.add_argument(
+        "--sync-to-model",
+        action="store_true",
+        help="spawn + drive the hero here and pace the world tick at the model's rate",
+    )
+    r.add_argument(
+        "--drop-stale",
+        action="store_true",
+        help="skip chunks when the model falls behind (breaks rollout continuity)",
     )
     add_sink_args(r)
     r.set_defaults(fn=cmd_run)
@@ -482,6 +509,14 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--realtime", action=argparse.BooleanOptionalAction, default=True,
                    help="pace ticks at the configured fps")  # fmt: skip
     d.add_argument("--destroy", action="store_true", help="destroy the hero on exit")
+    d.add_argument(
+        "--tick-fps",
+        type=float,
+        default=None,
+        help="wall-clock tick rate (default: the configured fps). Sim time still advances "
+        "1/fps per tick; run this below the model's throughput so `run --follow --no-drop` "
+        "never falls behind",
+    )
     d.set_defaults(fn=cmd_drive)
 
     st = sub.add_parser("selftest")
