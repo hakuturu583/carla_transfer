@@ -18,6 +18,13 @@ class WorldModelBackend(abc.ABC):
 
     #: Number of simulator frames the backend wants per ``generate`` call.
     frames_per_chunk: int = 1
+    #: Size of the very first chunk after ``open`` (OmniDreams: 5, then 8).
+    first_chunk_frames: int | None = None
+
+    def chunk_size(self, chunk_index: int) -> int:
+        if chunk_index == 0 and self.first_chunk_frames is not None:
+            return self.first_chunk_frames
+        return self.frames_per_chunk
 
     @abc.abstractmethod
     def open(self, initial_frame: Frame) -> None: ...

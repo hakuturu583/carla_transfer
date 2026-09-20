@@ -17,7 +17,8 @@ from carla_transfer.config import BackendKind, TransferConfig
 
 log = logging.getLogger(__name__)
 
-DOCKER_DIR = Path(__file__).resolve().parents[3] / "docker"
+REPO_ROOT = Path(__file__).resolve().parents[3]
+DOCKER_DIR = REPO_ROOT / "docker"
 
 
 class ContainerManager:
@@ -67,6 +68,13 @@ class ContainerManager:
         ]
         if c.backend is BackendKind.OMNIDREAMS:
             args += ["-p", f"{c.omnidreams.port}:{c.omnidreams.port}"]
+            od = c.omnidreams
+            if od.scene_archive and od.scene_transfer == "mount":
+                # Bind the file itself under its config name: HF-cache
+                # snapshot entries are symlinks into blobs/, which a directory
+                # mount would not follow.
+                src = od.scene_archive.expanduser().resolve()
+                args += ["-v", f"{src}:/scenes/{od.scene_archive.name}:ro"]
         elif c.backend is BackendKind.COSMOS3:
             port = _port_of(c.cosmos3.base_url)
             args += ["-p", f"{port}:{port}"]
@@ -83,21 +91,18 @@ class ContainerManager:
     def _command(self) -> list[str]:
         c = self.config
         if c.backend is BackendKind.OMNIDREAMS:
-            return [
-                "python",
-                "-m",
-                "omnidreams.grpc.server",
-                "--host",
-                "0.0.0.0",
-                "--port",
-                str(c.omnidreams.port),
-                "--pipeline_config_name",
-                c.omnidreams.pipeline_config,
-                "--resolution",
-                c.omnidreams.server_resolution,
-                "--output_format",
-                "jpeg",
-            ]
+            cmd = [
+                "carla-transfer-server",
+                "--host", "0.0.0.0",
+                "--port", str(c.omnidreams.port),
+                "--manifest", c.omnidreams.manifest,
+                "--resolution", f"{c.width}x{c.height}",
+                "--fps", str(c.fps),
+                "--camera", c.omnidreams.camera_name,
+            ]  # fmt: skip
+            if not c.omnidreams.offload_text_encoder:
+                cmd.append("--no-offload-text-encoder")
+            return cmd
         if c.backend is BackendKind.COSMOS3:
             return [
                 "vllm",
@@ -134,7 +139,9 @@ class ContainerManager:
         if not dockerfile.exists():
             raise FileNotFoundError(dockerfile)
         subprocess.run(
-            ["docker", "build", "-f", str(dockerfile), "-t", tag or self.d.image, str(DOCKER_DIR)],
+            # Context is the repo root: the image installs this package so the
+            # container can run carla-transfer-server.
+            ["docker", "build", "-f", str(dockerfile), "-t", tag or self.d.image, str(REPO_ROOT)],
             check=True,
         )
 

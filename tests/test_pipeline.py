@@ -73,3 +73,25 @@ def test_sink_exception_does_not_kill_worker():
             pipe.push(_frame(i))
         time.sleep(0.05)
     assert len(got) == 8
+
+
+def test_first_chunk_is_never_dropped():
+    cfg = _cfg()
+    backend = MockBackend(cfg, latency_s=0.05)
+    backend.first_chunk_frames = 5
+    seen: list[int] = []
+    orig = backend.generate
+
+    def spy(chunk):
+        seen.append(len(chunk))
+        return orig(chunk)
+
+    backend.generate = spy
+    pipe = StreamPipeline(cfg, backend=backend, sinks=[], max_pending_chunks=1)
+    pipe.start(_frame(0))
+    for i in range(5 + 8 * 6):
+        pipe.push(_frame(i))
+    pipe.stop()
+    assert seen[0] == 5
+    assert all(n == 8 for n in seen[1:])
+    assert pipe.stats.chunks_dropped > 0

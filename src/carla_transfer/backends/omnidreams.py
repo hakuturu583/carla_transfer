@@ -21,7 +21,7 @@ from carla_transfer.protos.omnidreams import video_model_pb2_grpc as vm_grpc
 
 log = logging.getLogger(__name__)
 
-CAMERA_ID = "front"
+CAMERA_ID = "front"  # server's output camera id; input camera is od.camera_name
 
 
 class OmniDreamsBackend(WorldModelBackend):
@@ -38,12 +38,19 @@ class OmniDreamsBackend(WorldModelBackend):
             ],
         )
         self._stub = vm_grpc.WorldModelServiceStub(self._channel)
+        self.first_chunk_frames = self.od.first_chunk_frames
         self._session_id: str | None = None
-        # TODO(details pending): HD map source. OmniDreams is HDMap-conditioned;
-        # the CARLA map must be exported to the parquet layout the server
-        # expects and passed here. Empty bytes lets the server fall back to its
-        # default scene when it supports that.
-        self.hdmap_parquets: bytes = b""
+        # clipgt scene archive. OmniDreams is HD-map conditioned: the server
+        # rasterizes this archive's lanes/objects from the ego poses we send.
+        # Either the archive bytes or a scene://<file> reference into the
+        # container's /scenes mount. TODO: export the CARLA map to a clipgt
+        # archive instead of reusing an nvidia/omni-dreams-scenes one.
+        self.scene_archive: bytes = b""
+        if self.od.scene_archive:
+            if self.od.scene_transfer == "inline":
+                self.scene_archive = self.od.scene_archive.read_bytes()
+            else:
+                self.scene_archive = b"scene://" + self.od.scene_archive.name.encode()
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -60,14 +67,16 @@ class OmniDreamsBackend(WorldModelBackend):
                 time.sleep(2)
 
     def open(self, initial_frame: Frame) -> None:
+        if not self.scene_archive:
+            raise RuntimeError("omnidreams.scene_archive is not set (clipgt .usdz required)")
         w, h = self.config.resolution
         frame = initial_frame.resized(w, h)
         req = video_model_pb2.SessionRequest(
-            static_world_map=video_model_pb2.StaticWorldMap(hdmap_parquets=self.hdmap_parquets),
+            static_world_map=video_model_pb2.StaticWorldMap(hdmap_parquets=self.scene_archive),
             text_prompt=video_model_pb2.TextPrompt(
                 positive=self.od.positive_prompt, negative=self.od.negative_prompt
             ),
-            camera_specs=[self._camera_spec(w, h)],
+            camera_specs=[self._camera_spec(w, h, self.od.camera_name)],
             initial_frames=[
                 video_model_pb2.Image(
                     data=encode_image(frame.rgb, "PNG"), format=video_model_pb2.PNG
@@ -119,7 +128,9 @@ class OmniDreamsBackend(WorldModelBackend):
     # -- helpers -------------------------------------------------------------
 
     @staticmethod
-    def _camera_spec(w: int, h: int, fov_deg: float = 90.0) -> camera_pb2.CameraSpec:
+    def _camera_spec(
+        w: int, h: int, logical_id: str, fov_deg: float = 90.0
+    ) -> camera_pb2.CameraSpec:
         import math
 
         f = (w / 2) / math.tan(math.radians(fov_deg) / 2)
@@ -130,7 +141,7 @@ class OmniDreamsBackend(WorldModelBackend):
                 focal_length_x=f,
                 focal_length_y=f,
             ),
-            logical_id=CAMERA_ID,
+            logical_id=logical_id,
             resolution_w=w,
             resolution_h=h,
             shutter_type=camera_pb2.GLOBAL,

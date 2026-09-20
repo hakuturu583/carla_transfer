@@ -32,6 +32,7 @@ dev = [
 
 [project.scripts]
 carla-transfer = "carla_transfer.cli:main"
+carla-transfer-server = "carla_transfer.server.omnidreams_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/carla_transfer"]

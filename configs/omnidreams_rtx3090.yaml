@@ -1,4 +1,7 @@
-# OmniDreams on a single RTX 3090, client-side frames at 512x288 @ 30 fps.
+# OmniDreams on a single RTX 3090: 512x288 @ 30 fps, text encoder offloaded.
+# Measured in the interactive-drive demo (fork branch
+# claude/omnidreams-rtx3090-ahncny): 29.1 fps, 16.3 GiB peak at init,
+# ~12 GiB steady state. Step width/height to 640x352 for ~20 fps.
 backend: omnidreams
 width: 512
 height: 288
@@ -6,16 +9,20 @@ fps: 30
 docker:
   image: carla-transfer/omnidreams:latest
   container_name: carla-transfer-omnidreams
-  env:
-    # HF token with read access to nvidia/omni-dreams-models. Prefer
-    # `export HF_TOKEN=...` in the shell; it is picked up by the entrypoint.
-    # HF_TOKEN: hf_xxx
+  # hf_cache defaults to $HF_HOME (or ~/.cache/huggingface). HF_TOKEN is
+  # forwarded from the host environment.
   startup_timeout_s: 1800
 omnidreams:
   port: 50051
   frames_per_chunk: 8
-  pipeline_config: omnidreams-sv-2steps-chunk2-loc6-lightvae-lighttae
-  server_resolution: 480p
+  first_chunk_frames: 5
+  manifest: example_world_model_rtx3090.yaml
+  offload_text_encoder: true
+  camera_name: camera_front_wide_120fov
+  # clipgt scene archive for HD-map conditioning. Placeholder until the CARLA
+  # map exporter exists: any archive from nvidia/omni-dreams-scenes, e.g.
+  # $HF_HOME/hub/datasets--nvidia--omni-dreams-scenes/snapshots/<rev>/scenes/clipgt-0d404ff7-2b66-498c-b047-1ed8cded60d4.usdz
+  scene_archive: null
   positive_prompt: >-
     Driving scene from a front-facing car camera. Urban environment with roads,
     vehicles, pedestrians, traffic signs, and buildings. Clear visibility,

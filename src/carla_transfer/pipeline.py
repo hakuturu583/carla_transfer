@@ -9,8 +9,8 @@ queued chunks are dropped so latency stays bounded (``drop_stale``).
 
 from __future__ import annotations
 
+import collections
 import logging
-import queue
 import threading
 import time
 from collections.abc import Callable, Iterable, Sequence
@@ -63,7 +63,9 @@ class StreamPipeline:
         self.sinks: list[Sink] = list(sinks)
         self.drop_stale = drop_stale
         self.stats = PipelineStats(_frames_per_chunk=self.backend.frames_per_chunk)
-        self._pending: queue.Queue[Sequence[Frame] | None] = queue.Queue(maxsize=max_pending_chunks)
+        self._pending: collections.deque[tuple[int, Sequence[Frame]] | None] = collections.deque()
+        self._max_pending = max_pending_chunks
+        self._cv = threading.Condition()
         self._chunk: list[Frame] = []
         self._worker: threading.Thread | None = None
         self._opened = False
@@ -83,7 +85,7 @@ class StreamPipeline:
         if flush and self._chunk:
             self._submit(self._chunk)
             self._chunk = []
-        self._pending.put(None)
+        self._enqueue(None)
         if self._worker:
             self._worker.join()
         self.backend.close()
@@ -102,34 +104,47 @@ class StreamPipeline:
         if not self._opened:
             raise RuntimeError("push() before start()")
         self._chunk.append(frame.resized(*self.config.resolution))
-        if len(self._chunk) >= self.backend.frames_per_chunk:
+        if len(self._chunk) >= self.backend.chunk_size(self.stats.chunks_submitted):
             self._submit(self._chunk)
             self._chunk = []
 
     def _submit(self, chunk: list[Frame]) -> None:
+        index = self.stats.chunks_submitted
         self.stats.chunks_submitted += 1
-        while True:
-            try:
-                self._pending.put_nowait(chunk)
-                return
-            except queue.Full:
-                if not self.drop_stale:
-                    self._pending.put(chunk)
-                    return
-                try:
-                    self._pending.get_nowait()
+        self._enqueue((index, chunk))
+
+    def _enqueue(self, item: tuple[int, Sequence[Frame]] | None) -> None:
+        with self._cv:
+            if item is not None and self.drop_stale:
+                while len(self._pending) >= self._max_pending:
+                    # The first chunk defines the session (OmniDreams' 5-frame
+                    # initial chunk); never drop it. Drop the newcomer instead.
+                    if self._pending[0] is not None and self._pending[0][0] == 0:
+                        self.stats.chunks_dropped += 1
+                        return
+                    self._pending.popleft()
                     self.stats.chunks_dropped += 1
-                except queue.Empty:
-                    pass
+            elif item is not None:
+                self._cv.wait_for(lambda: len(self._pending) < self._max_pending)
+            self._pending.append(item)
+            self._cv.notify_all()
+
+    def _dequeue(self) -> tuple[int, Sequence[Frame]] | None:
+        with self._cv:
+            self._cv.wait_for(lambda: len(self._pending) > 0)
+            item = self._pending.popleft()
+            self._cv.notify_all()
+            return item
 
     # -- worker --------------------------------------------------------------
 
     def _run(self) -> None:
         period = 1.0 / self.config.fps if self.config.fps else 0.0
         while True:
-            chunk = self._pending.get()
-            if chunk is None:
+            item = self._dequeue()
+            if item is None:
                 return
+            _, chunk = item
             t0 = time.perf_counter()
             try:
                 out = self.backend.generate(chunk)

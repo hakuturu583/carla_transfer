@@ -2,7 +2,8 @@
 #
 # The upstream image already contains everything; this file exists so that
 # `carla-transfer build --backend cosmos3` produces a locally tagged image with
-# the same entrypoint conventions as the OmniDreams one.
+# the same entrypoint conventions as the OmniDreams one. Build context is the
+# repo root (unused here).
 FROM vllm/vllm-omni:cosmos3
 ENV HF_HOME=/root/.cache/huggingface
 VOLUME ["/root/.cache/huggingface"]

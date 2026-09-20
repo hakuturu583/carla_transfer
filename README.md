@@ -24,11 +24,14 @@ src/carla_transfer/
   sinks.py           WindowSink (cv2), MjpegSink (http), Mp4Sink (imageio)
   backends/
     base.py          WorldModelBackend: open(initial) / generate(chunk) / close()
-    omnidreams.py    gRPC client for flashdreams' WorldModelService
+    omnidreams.py    gRPC client for the OmniDreams WorldModelService (5-frame first chunk, then 8)
     cosmos3.py       HTTP client for vLLM-Omni /v1/videos/sync (video-to-video)
     mock.py          echo backend for tests and CARLA-side bring-up
   docker/manager.py  build / up / down / logs via the docker CLI
   carla/source.py    CarlaCameraSource: sensor.camera.rgb → Frame (+ ego Pose)
+  server/            carla-transfer-server: runs INSIDE the container on top of the
+                     flashdreams interactive-drive world model (RTX 3090 manifest,
+                     --offload-text-encoder), speaking the same WorldModelService proto
   protos/omnidreams/ vendored OmniDreams .proto + generated stubs (scripts/compile_protos.sh)
 docker/              Dockerfile.omnidreams, Dockerfile.cosmos3, docker-compose.yaml
 configs/             omnidreams_rtx3090.yaml, cosmos3_nano.yaml, mock.yaml
@@ -45,7 +48,8 @@ uv sync --extra carla          # CARLA python client (needs a CARLA 0.9.16 serve
 ## Run
 
 ```bash
-export HF_TOKEN=hf_...   # read access to nvidia/omni-dreams-models
+export HF_TOKEN=hf_...   # read access to nvidia/omni-dreams-models + omni-dreams-scenes
+# point configs/omnidreams_rtx3090.yaml `omnidreams.scene_archive` at a clipgt .usdz
 
 carla-transfer -c configs/omnidreams_rtx3090.yaml build      # docker build
 carla-transfer -c configs/omnidreams_rtx3090.yaml up         # docker run + wait for gRPC
@@ -80,18 +84,52 @@ with StreamPipeline(cfg, sinks=[MjpegSink(port=8080)]) as pipe:
 
 | backend | server in container | transport | real-time on RTX 3090 |
 |---|---|---|---|
-| `omnidreams` | `python -m omnidreams.grpc.server` (flashdreams) | gRPC `WorldModelService` | yes – 512x288 measured 29 fps in the interactive demo (bf16, LightVAE, torch.compile) |
+| `omnidreams` | `carla-transfer-server` over flashdreams' interactive-drive world model | gRPC `WorldModelService` | yes – 512x288 measured 29 fps, 16 GiB peak (bf16, LightVAE, torch.compile, text encoder offloaded) |
 | `cosmos3` | `vllm serve nvidia/Cosmos3-Nano --omni` | HTTP `/v1/videos/sync` | no – diffusion, seconds per chunk; offline-quality path |
 | `mock` | – | – | – |
 
+## How the RTX 3090 path works
+
+flashdreams' stock `omnidreams.grpc.server` only knows the 480p/720p/704p
+pipeline configs and keeps the ~15 GB Cosmos-Reason1 text encoder resident,
+so it needs ~48 GB. The fork branch
+[`hakuturu583/flashdreams@claude/omnidreams-rtx3090-ahncny`](https://github.com/hakuturu583/flashdreams/tree/claude/omnidreams-rtx3090-ahncny)
+adds `example_world_model_rtx3090.yaml` (bf16 PyTorch path, LightVAE +
+LightTAE, torch.compile + CUDA graphs, attention sinks, 512x288) for the
+`interactive-drive` demo, driven with `--offload-text-encoder`. Measured there:
+
+| `resolution_wh` | chunk (8 frames) | effective fps | VRAM peak |
+|---|---|---|---|
+| 512x288 | 275 ms | 29.1 | 16.3 GiB (init), ~12 GiB steady |
+| 640x352 | 404 ms | 19.8 | 16.3 GiB |
+
+`carla_transfer.server.omnidreams_server` wraps that demo's
+`WorldModelRenderBackend` and exposes it behind the upstream
+`WorldModelService` proto, so the host client is the same one that would talk
+to the stock server. `docker/Dockerfile.omnidreams` clones the fork branch and
+installs this package into its venv. `width`/`height`/`fps` in the YAML are
+passed through as `--resolution`/`--fps` overrides of the manifest.
+
+Session protocol: `start_session` takes the clipgt scene archive (as bytes, or
+as `scene://<file>` resolved against the container's `/scenes` mount — the
+official archives are 2.3 GB) plus the CARLA frame as the initial image and
+the prompt; the first `render_video_chunk` must carry 5 poses, later ones 8.
+
 ## Status / open points
 
-- **HD map conditioning** (OmniDreams): `OmniDreamsBackend.hdmap_parquets`
-  is empty. CARLA's map has to be exported to the parquet layout the server
-  expects. Dynamic actors (`DynamicWorldState`) are likewise not populated yet.
-- The OmniDreams gRPC server accepts `--resolution 480p|720p|704p`; the
-  512x288 RTX 3090 manifest is only wired into the `interactive-drive`
-  demo, so the gRPC path on a 24 GB card is unverified.
+- **Not yet run on the GPU** from this repo: `carla-transfer build` (clones
+  the fork + `uv sync`, several GB) and `up` have not been executed. The server
+  was exercised end to end against a real `omni-dreams-scenes` archive with the
+  world model stubbed (scene load, initial-frame/prompt override, 5-then-8
+  chunking, close/reset).
+- **HD map from CARLA**: the scene archive is still an
+  `nvidia/omni-dreams-scenes` one. The conditioning data inside is small
+  (`clipgt/lane.parquet` 0.9 MB, `obstacle.parquet` 4.5 MB, calibration,
+  `metadata.yaml`); the 2.3 GB is meshes/checkpoint the rasterizer does not
+  need. Exporting CARLA's OpenDRIVE map into that layout is the next step
+  (`synthetic_scene.py` in the fork is the template).
+- **Dynamic actors**: the rasterizer reads vehicle tracks from the archive at
+  load time, so live CARLA vehicles are not rendered yet.
 - First container start pays the model download and a ~7 min
   torch.compile; the Inductor cache is persisted under
-  `~/.cache/carla_transfer/torchinductor` so later starts are fast.
+  `~/.cache/carla_transfer/torchinductor` so later starts take ~30 s.

@@ -1,10 +1,10 @@
-# Alternative to `carla-transfer up`: docker compose --profile omnidreams up
+# Alternative to `carla-transfer up`: docker compose -f docker/docker-compose.yaml --profile omnidreams up
 services:
   omnidreams:
     profiles: ["omnidreams"]
     build:
-      context: .
-      dockerfile: Dockerfile.omnidreams
+      context: ..
+      dockerfile: docker/Dockerfile.omnidreams
     image: carla-transfer/omnidreams:latest
     container_name: carla-transfer-omnidreams
     ipc: host

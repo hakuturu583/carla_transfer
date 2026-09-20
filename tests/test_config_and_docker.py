@@ -13,6 +13,8 @@ def test_yaml_roundtrip_omnidreams():
     assert cfg.backend is BackendKind.OMNIDREAMS
     assert cfg.resolution == (512, 288)
     assert cfg.omnidreams.frames_per_chunk == 8
+    assert cfg.omnidreams.first_chunk_frames == 5
+    assert cfg.omnidreams.scene_archive is None
     assert cfg.docker.container_name == "carla-transfer-omnidreams"
 
 
@@ -37,7 +39,25 @@ def test_docker_run_args_omnidreams(fake_docker):
     assert "--gpus" in args and args[args.index("--gpus") + 1] == "all"
     assert "-p" in args and "50051:50051" in args
     assert "carla-transfer/omnidreams:latest" in args
-    assert args[-1] == "jpeg" and "omnidreams.grpc.server" in args
+    assert "carla-transfer-server" in args
+    assert args[args.index("--resolution") + 1] == "512x288"
+    assert args[args.index("--manifest") + 1] == "example_world_model_rtx3090.yaml"
+    assert "--no-offload-text-encoder" not in args
+    assert not any(a.startswith("/scenes") or ":/scenes/" in a for a in args)
+
+
+def test_docker_run_args_mounts_scene_archive(fake_docker):
+    cfg = TransferConfig.from_yaml(CONFIGS / "omnidreams_rtx3090.yaml")
+    cfg.docker.hf_cache = fake_docker / "hf"
+    cfg.docker.inductor_cache = fake_docker / "inductor"
+    blob = fake_docker / "blobs" / "abc"
+    blob.parent.mkdir()
+    blob.write_bytes(b"x")
+    link = fake_docker / "scene.usdz"
+    link.symlink_to(blob)
+    cfg.omnidreams.scene_archive = link
+    args = ContainerManager(cfg).run_args()
+    assert f"{blob}:/scenes/scene.usdz:ro" in args
     assert (fake_docker / "hf").is_dir()
 
 

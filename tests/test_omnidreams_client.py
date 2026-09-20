@@ -60,12 +60,19 @@ def server():
     srv.stop(0)
 
 
-def test_round_trip(server):
-    svc, port = server
+def _cfg(port, tmp_path):
     cfg = TransferConfig(backend=BackendKind.OMNIDREAMS, width=64, height=32)
     cfg.omnidreams.port = port
     cfg.omnidreams.positive_prompt = "sunny"
-    be = OmniDreamsBackend(cfg)
+    scene = tmp_path / "scene.usdz"
+    scene.write_bytes(b"PK-fake-clipgt")
+    cfg.omnidreams.scene_archive = scene
+    return cfg
+
+
+def test_round_trip(server, tmp_path):
+    svc, port = server
+    be = OmniDreamsBackend(_cfg(port, tmp_path))
     be.wait_ready(5)
     init = Frame(np.zeros((32, 64, 3), np.uint8), 0)
     with be:
@@ -76,8 +83,9 @@ def test_round_trip(server):
         ]
         out = be.generate(chunk)
 
+    assert svc.session_req.static_world_map.hdmap_parquets == b"scene://scene.usdz"
     assert svc.session_req.text_prompt.positive == "sunny"
-    assert svc.session_req.camera_specs[0].logical_id == "front"
+    assert svc.session_req.camera_specs[0].logical_id == "camera_front_wide_120fov"
     assert svc.session_req.camera_specs[0].resolution_w == 64
     assert decode_image(svc.session_req.initial_frames[0].data).shape == (32, 64, 3)
     poses = svc.chunk_reqs[0].rig_trajectory.poses
@@ -85,3 +93,37 @@ def test_round_trip(server):
     assert poses[3].pose.vec.x == 3
     assert len(out) == 8 and out[0].rgb[0, 0, 0] == 7 and out[5].timestamp_us == 5000
     assert svc.closed == ["s1"]
+
+
+def test_inline_scene_transfer_sends_bytes(server, tmp_path):
+    svc, port = server
+    cfg = _cfg(port, tmp_path)
+    cfg.omnidreams.scene_transfer = "inline"
+    with OmniDreamsBackend(cfg) as be:
+        be.open(Frame(np.zeros((32, 64, 3), np.uint8), 0))
+    assert svc.session_req.static_world_map.hdmap_parquets == b"PK-fake-clipgt"
+
+
+def test_open_without_scene_archive_fails(server, tmp_path):
+    _, port = server
+    cfg = _cfg(port, tmp_path)
+    cfg.omnidreams.scene_archive = None
+    be = OmniDreamsBackend(cfg)
+    with pytest.raises(RuntimeError, match="scene_archive"):
+        be.open(Frame(np.zeros((32, 64, 3), np.uint8), 0))
+
+
+def test_pipeline_sends_5_then_8_poses(server, tmp_path):
+    from carla_transfer.pipeline import StreamPipeline
+
+    svc, port = server
+    cfg = _cfg(port, tmp_path)
+    cfg.fps = 1000
+    got = []
+    backend = OmniDreamsBackend(cfg)
+    with StreamPipeline(cfg, backend=backend, sinks=[got.append], drop_stale=False) as pipe:
+        pipe.start(Frame(np.zeros((32, 64, 3), np.uint8), 0))
+        for i in range(5 + 8 + 8):
+            pipe.push(Frame(np.zeros((32, 64, 3), np.uint8), i * 1000))
+    assert [len(r.rig_trajectory.poses) for r in svc.chunk_reqs] == [5, 8, 8]
+    assert len(got) == 21

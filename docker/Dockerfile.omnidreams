@@ -1,16 +1,21 @@
-# OmniDreams gRPC WorldModelService (NVIDIA flashdreams) for carla_transfer.
+# OmniDreams world model for carla_transfer on a single 24 GB GPU.
 #
-# Build:  carla-transfer build --backend omnidreams
-#         (== docker build -f docker/Dockerfile.omnidreams -t carla-transfer/omnidreams:latest docker)
+# Build (context = repo root):
+#   carla-transfer -c configs/omnidreams_rtx3090.yaml build
+#   == docker build -f docker/Dockerfile.omnidreams -t carla-transfer/omnidreams:latest .
 #
-# Runtime needs the NVIDIA Container Toolkit and an R580+ driver (CUDA 13).
-# RTX 3090 (SM 8.6) stays on the PyTorch bf16 path; the native FP8 extension
-# is Blackwell-only and is not built here.
+# flashdreams comes from the fork branch that adds the RTX 3090 manifest
+# (example_world_model_rtx3090.yaml: bf16 PyTorch path, LightVAE + LightTAE,
+# torch.compile, 512x288) and the sink_size support it relies on. The server
+# is carla_transfer.server.omnidreams_server, run with --offload-text-encoder
+# so the ~15 GB Cosmos-Reason1 encoder is freed before the DiT is built.
+#
+# Needs the NVIDIA Container Toolkit and an R580+ driver (CUDA 13).
 ARG BASE_IMAGE=nvidia/cuda:13.2.1-cudnn-devel-ubuntu24.04
 FROM ${BASE_IMAGE}
 
-ARG FLASHDREAMS_REPO=https://github.com/NVIDIA/flashdreams.git
-ARG FLASHDREAMS_REF=main
+ARG FLASHDREAMS_REPO=https://github.com/hakuturu583/flashdreams.git
+ARG FLASHDREAMS_REF=claude/omnidreams-rtx3090-ahncny
 
 ENV DEBIAN_FRONTEND=noninteractive \
     UV_LINK_MODE=copy \
@@ -31,13 +36,17 @@ RUN git clone --depth 1 --branch "${FLASHDREAMS_REF}" "${FLASHDREAMS_REPO}" . \
     && uv python install 3.12 \
     && uv sync --package flashdreams-omnidreams --extra interactive-drive
 
+# This package (client + in-container server) into the same venv.
+COPY pyproject.toml README.md /opt/carla_transfer/
+COPY src /opt/carla_transfer/src
+RUN uv pip install --python /opt/flashdreams/.venv/bin/python /opt/carla_transfer
+
 ENV PATH="/opt/flashdreams/.venv/bin:${PATH}"
 VOLUME ["/root/.cache/huggingface", "/root/.cache/torchinductor"]
 EXPOSE 50051
 
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["python", "-m", "omnidreams.grpc.server", "--host", "0.0.0.0", "--port", "50051", \
-     "--pipeline_config_name", "omnidreams-sv-2steps-chunk2-loc6-lightvae-lighttae", \
-     "--resolution", "480p"]
+CMD ["carla-transfer-server", "--host", "0.0.0.0", "--port", "50051", \
+     "--manifest", "example_world_model_rtx3090.yaml", "--offload-text-encoder"]
