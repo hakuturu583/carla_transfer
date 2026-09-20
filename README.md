@@ -29,9 +29,13 @@ src/carla_transfer/
     mock.py          echo backend for tests and CARLA-side bring-up
   docker/manager.py  build / up / down / logs via the docker CLI
   carla/source.py    CarlaCameraSource: sensor.camera.rgb → Frame (+ ego Pose)
-  server/            carla-transfer-server: runs INSIDE the container on top of the
-                     flashdreams interactive-drive world model (RTX 3090 manifest,
-                     --offload-text-encoder), speaking the same WorldModelService proto
+  hdmap/             CARLA .xodr → OmniDreams scene archive (roadgen), HD-map control
+                     video, prepare-scene orchestration
+  server/            run INSIDE the containers:
+    omnidreams_server.py  WorldModelService over flashdreams' interactive-drive world
+                          model (RTX 3090 manifest, --offload-text-encoder); --raster-only
+    cosmos3_transfer.py   Cosmos3 transfer (world-scenario hint) → first_image.png
+  docker/carla.py    CARLA server container, off-screen at -quality-level=Low
   protos/omnidreams/ vendored OmniDreams .proto + generated stubs (scripts/compile_protos.sh)
 docker/              Dockerfile.omnidreams, Dockerfile.cosmos3, docker-compose.yaml
 configs/             omnidreams_rtx3090.yaml, cosmos3_nano.yaml, mock.yaml
@@ -48,14 +52,30 @@ uv sync --extra carla          # CARLA python client (needs a CARLA 0.9.16 serve
 ## Run
 
 ```bash
-export HF_TOKEN=hf_...   # read access to nvidia/omni-dreams-models + omni-dreams-scenes
-# point configs/omnidreams_rtx3090.yaml `omnidreams.scene_archive` at a clipgt .usdz
+export HF_TOKEN=hf_...   # read access to nvidia/omni-dreams-models, nvidia/Cosmos3-Nano
+C=configs/omnidreams_rtx3090.yaml
 
-carla-transfer -c configs/omnidreams_rtx3090.yaml build      # docker build
-carla-transfer -c configs/omnidreams_rtx3090.yaml up         # docker run + wait for gRPC
-carla-transfer -c configs/omnidreams_rtx3090.yaml run --mjpeg :8080 --record outputs/run.mp4
-carla-transfer -c configs/omnidreams_rtx3090.yaml down
+carla-transfer -c $C build omnidreams cosmos3        # docker build (fork flashdreams; vllm-omni + diffusers)
+
+# CARLA map → scene archive with a Cosmos3-rendered first frame
+carla-transfer -c $C prepare-scene --xodr Town10HD_Opt.xodr --out scenes/town10.usdz \
+    --clip-id town10 --cosmos3-args --revision fp8 --cpu-offload
+# then set omnidreams.scene_archive: scenes/town10.usdz in the YAML
+
+carla-transfer -c $C carla up                        # CARLA off-screen, -quality-level=Low
+carla-transfer -c $C up                              # world model container + wait for gRPC
+carla-transfer -c $C run --mjpeg :8080 --record outputs/run.mp4
+carla-transfer -c $C down && carla-transfer -c $C carla down
 ```
+
+`prepare-scene` = `export-map` (roadgen reads the OpenDRIVE, writes the ClipGT
+layers, packed into a 240 KB archive) → HD-map control video along the
+archive's ego route (OmniDreams image in `--raster-only` mode, 101 frames @
+10 fps) → Cosmos3 transfer with the world-scenario hint → its first frame is
+written into the archive as `first_image.png`. With
+`omnidreams.initial_image: archive` (default) OmniDreams starts from that
+image instead of CARLA's rendering. `--skip-cosmos3` stops after the archive;
+`--local` runs the raster and Cosmos3 steps in the current Python environment.
 
 `run` connects to CARLA at `--carla-host/--carla-port`, puts the world in
 synchronous mode at `fps`, attaches a camera to the vehicle whose
@@ -115,21 +135,35 @@ as `scene://<file>` resolved against the container's `/scenes` mount — the
 official archives are 2.3 GB) plus the CARLA frame as the initial image and
 the prompt; the first `render_video_chunk` must carry 5 poses, later ones 8.
 
+## CARLA map → scene archive
+
+[roadgen](https://pypi.org/project/roadgen/) reads OpenDRIVE and writes the
+ClipGT parquet layers the ludus rasterizer consumes (same naming as
+cosmos-transfer2.5's `clipgt_loader`). `hdmap/xodr.py` first rewrites the
+RoadRunner quirks in CARLA's Town maps that roadgen's strict OpenDRIVE 1.7
+reader rejects (`<header><userData>` without `code`, `type="curb"` road marks
+without `color`, `<object type="-1">`, outline corners without `height`); no
+geometry is touched. `hdmap/clipgt.py` drives a route (successor lanes from
+`--start-lane`, or `--route`) with one f-theta front camera and packs
+`clipgt/*.parquet` + `metadata.yaml` + `rig_trajectories.json` + prompt +
+placeholder image. Verified on the 3090: Town10HD_Opt.xodr → 240 KB archive,
+loads in omnidreams' `load_scene_bundle` and ludus, 101 condition frames in 2 s.
+
 ## Status / open points
 
-- **Not yet run on the GPU** from this repo: `carla-transfer build` (clones
-  the fork + `uv sync`, several GB) and `up` have not been executed. The server
-  was exercised end to end against a real `omni-dreams-scenes` archive with the
-  world model stubbed (scene load, initial-frame/prompt override, 5-then-8
-  chunking, close/reset).
-- **HD map from CARLA**: the scene archive is still an
-  `nvidia/omni-dreams-scenes` one. The conditioning data inside is small
-  (`clipgt/lane.parquet` 0.9 MB, `obstacle.parquet` 4.5 MB, calibration,
-  `metadata.yaml`); the 2.3 GB is meshes/checkpoint the rasterizer does not
-  need. Exporting CARLA's OpenDRIVE map into that layout is the next step
-  (`synthetic_scene.py` in the fork is the template).
-- **Dynamic actors**: the rasterizer reads vehicle tracks from the archive at
-  load time, so live CARLA vehicles are not rendered yet.
+- **Not yet run on the GPU** from this repo: the docker images and the
+  world-model `up`/`run`. Verified pieces: the OmniDreams server against a
+  real archive with the model stubbed; the raster-only server and control
+  video on the real rasterizer (flashdreams venv, RTX 3090).
+- **Cosmos3 on a 24 GB card**: Cosmos3-Nano is 30 GB bf16 / 16.5 GB fp8
+  (transformer). Only the `fp8` revision can fit, and on Ampere the FP8
+  GEMM is unavailable so diffusers runs the W8A16 dequant path — untested
+  here. `prepare-scene --cosmos3-args --revision fp8 --cpu-offload` is the
+  intended invocation; `--width/--height/--num-frames` reduce activations.
+- **Dynamic actors**: the rasterizer reads vehicle tracks from the archive
+  at load time (`clipgt/obstacle.parquet`); live CARLA vehicles are not
+  rendered yet. The upstream proto has `DynamicWorldState` per chunk; the
+  flashdreams side needs an API to update ludus cubes per chunk.
 - First container start pays the model download and a ~7 min
   torch.compile; the Inductor cache is persisted under
   `~/.cache/carla_transfer/torchinductor` so later starts take ~30 s.
