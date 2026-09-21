@@ -174,6 +174,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     import carla
 
     from carla_transfer.carla import CarlaCameraSource
+    from carla_transfer.hdmap.clipgt import CameraSpec
     from carla_transfer.pipeline import StreamPipeline
 
     cfg = _load_config(args)
@@ -246,7 +247,19 @@ def cmd_run(args: argparse.Namespace) -> int:
         vehicle = _wait_for_vehicle(world, args.role_name, step)
     else:
         vehicle = _find_or_spawn_vehicle(world, args.role_name, spawn)
-    src = CarlaCameraSource(world, vehicle, cfg.width, cfg.height)
+    # Same intrinsics/mount as the archive camera the model renders with
+    # (clipgt calibration), so CARLA frames and generated frames line up.
+    cam = CameraSpec()
+    src = CarlaCameraSource(
+        world,
+        vehicle,
+        cfg.width,
+        cfg.height,
+        fov_deg=cam.fov_deg,
+        transform=carla.Transform(
+            carla.Location(x=cam.position[0], y=-cam.position[1], z=cam.position[2])
+        ),
+    )
     input_sink = None
     if args.record_input:
         from carla_transfer.sinks import Mp4Sink
@@ -432,9 +445,16 @@ def cmd_drive(args: argparse.Namespace) -> int:
             )
         if args.walkers:
             world.tick()
+            lo, hi = (float(v) for v in args.walkers_ahead.split(","))
             walkers = spawn_walkers(
-                world, args.walkers, args.seed or 0, near=vehicle.get_location()
+                world,
+                args.walkers,
+                args.seed or 0,
+                near=vehicle.get_location(),
+                ahead_m=(lo, hi),
+                side=args.walkers_side,
             )
+            world.tick()  # let the spawns land before any transform/physics call
     log.info("hero %s at %s", vehicle.id, vehicle.get_transform())
 
     period = 1.0 / (args.tick_fps or cfg.fps)
@@ -690,6 +710,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="pedestrians on the sidewalks ahead that cross the road on release",
     )
+    d.add_argument("--walkers-ahead", default="15,45", help="MIN,MAX metres ahead of the hero")
+    d.add_argument("--walkers-side", choices=["left", "right", "both"], default="both")
     d.add_argument("--seed", type=int, default=None, help="Traffic Manager / spawn seed")
     d.add_argument("--sim-seconds", type=float, default=0.0, help="stop after this much sim time")
     d.add_argument("--wait-for", help="hold all actors still until this file exists")

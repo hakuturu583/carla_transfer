@@ -347,10 +347,16 @@ def spawn_traffic(
 
 
 def spawn_walkers(
-    world, n_walkers: int, seed: int = 0, near=None, ahead_m: tuple[float, float] = (15.0, 45.0)
-) -> list[tuple[Any, Any]]:
+    world,
+    n_walkers: int,
+    seed: int = 0,
+    near=None,
+    ahead_m: tuple[float, float] = (15.0, 45.0),
+    side: str = "both",
+) -> list[tuple[Any, Any, Any]]:
     """Pedestrians on the sidewalks ahead of ``near`` (the hero), each paired
     with a straight-line crossing direction towards the opposite sidewalk.
+    ``side`` picks the kerb they start from ("left", "right" or "both").
 
     Returns ``[(walker, carla.WalkerControl, carla.Transform)]``; the caller advances them
     with :func:`step_walkers` once the scenario is released so they hold
@@ -380,13 +386,13 @@ def spawn_walkers(
             continue
         lane = nxt[0]
         right = lane.transform.get_right_vector()
-        side = rng.choice((-1.0, 1.0))
+        sgn = {"left": -1.0, "right": 1.0}.get(side) or rng.choice((-1.0, 1.0))
         # Kerb on one side of the road: walk out from the lane centre until
         # the nearest sidewalk waypoint is found; fall back to a fixed offset.
         kerb = None
         for off in (4.0, 6.0, 8.0, 10.0, 12.0):
             probe = lane.transform.location + carla.Location(
-                x=right.x * off * side, y=right.y * off * side
+                x=right.x * off * sgn, y=right.y * off * sgn
             )
             swp = cmap.get_waypoint(probe, project_to_road=True, lane_type=carla.LaneType.Sidewalk)
             if swp is not None and swp.transform.location.distance(probe) < 3.0:
@@ -394,13 +400,13 @@ def spawn_walkers(
                 break
         if kerb is None:
             kerb = lane.transform.location + carla.Location(
-                x=right.x * 7.0 * side, y=right.y * 7.0 * side
+                x=right.x * 7.0 * sgn, y=right.y * 7.0 * sgn
             )
         bp = rng.choice(lib)
         if bp.has_attribute("is_invincible"):
             bp.set_attribute("is_invincible", "false")
         bp.set_attribute("role_name", "walker")
-        yaw = math.degrees(math.atan2(-right.y * side, -right.x * side))
+        yaw = math.degrees(math.atan2(-right.y * sgn, -right.x * sgn))
         tf = carla.Transform(
             carla.Location(x=kerb.x, y=kerb.y, z=kerb.z + 1.0), carla.Rotation(yaw=yaw)
         )
@@ -408,7 +414,7 @@ def spawn_walkers(
         if w is None:
             continue
         ctrl = carla.WalkerControl(
-            direction=carla.Vector3D(-right.x * side, -right.y * side, 0.0),
+            direction=carla.Vector3D(-right.x * sgn, -right.y * sgn, 0.0),
             speed=rng.uniform(1.2, 1.8),
         )
         out.append((w, ctrl, tf))
