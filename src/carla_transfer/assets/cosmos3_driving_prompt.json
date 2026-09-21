@@ -8,13 +8,13 @@
     "illumination_effect": "Natural, evenly lit scene with realistic contrast and true-to-life colors"
   },
   "aesthetics": {
-    "composition": "Symmetrical dashcam framing with the road converging toward the center and buildings flanking both sides",
+    "composition": "Symmetrical dashcam framing with the horizon at the exact vertical center; the road fills the lower half, buildings and sky the upper half; no part of the ego vehicle is visible",
     "color_scheme": "Neutral asphalt grey, white and yellow lane paint, green foliage, beige and brick building facades, blue sky",
     "image_quality": "Sharp, high-resolution, no compression artifacts"
   },
   "cinematography": {
     "camera_motion": "Smooth forward driving motion",
-    "framing": "Wide shot",
+    "framing": "Wide shot, camera mounted at the top of the windshield: no hood or dashboard visible, the horizon sits at the vertical center of the frame",
     "camera_angle": "Eye-level",
     "depth_of_field": "Deep",
     "focus": "Sharp focus from the road surface to the distant buildings",
@@ -22,16 +22,22 @@
   },
   "style_medium": "Live-action video",
   "artistic_style": "Documentary dashcam realism",
-  "context": "Dashcam footage from a car driving along a city street on a sunny day",
+  "context": "Dashcam footage from a camera mounted high on the windshield of a car driving along a city street on a sunny day; no hood visible",
   "actions": [
-    {"time": "0:00-0:10", "description": "The recording vehicle drives forward along the lane, following the road and passing buildings, trees and parked cars; the road markings and boundaries stay exactly where the control map places them."}
+    {
+      "time": "0:00-0:10",
+      "description": "The recording vehicle drives forward along the lane, following the road and passing buildings, trees and parked cars; the road markings and boundaries stay exactly where the control map places them."
+    }
   ],
   "text_and_signage_elements": [],
   "segments": [],
   "transitions": [],
   "temporal_caption": "From 0:00 to 0:10 the dashcam shows a car driving steadily along a sunlit city street, lane markings passing beneath, buildings and trees sliding by on both sides.",
   "audio_description": "Road noise and a steady engine hum; no speech or music.",
-  "resolution": {"W": 832, "H": 480},
+  "resolution": {
+    "W": 832,
+    "H": 480
+  },
   "aspect_ratio": "16,9",
   "duration": "10s",
   "fps": 10

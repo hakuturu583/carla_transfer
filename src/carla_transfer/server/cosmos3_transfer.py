@@ -73,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="fps of the control video if it differs from --fps")  # fmt: skip
     p.add_argument("--steps", type=int, default=35)
     p.add_argument("--guidance-scale", type=float, default=1.0)
-    p.add_argument("--control-guidance", type=float, default=3.0)
+    p.add_argument("--control-guidance", type=float, default=4.0)
     p.add_argument("--flow-shift", type=float, default=10.0)
     p.add_argument("--seed", type=int, default=2026)
     p.add_argument("--offload", choices=["group", "none"], default="group",

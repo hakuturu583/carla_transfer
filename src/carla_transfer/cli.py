@@ -329,12 +329,27 @@ def _wait_for_carla(host: str, port: int, timeout_s: float) -> None:
             time.sleep(5)
 
 
+def _get_traffic_manager(client, port: int, attempts: int = 10):
+    """Right after CARLA starts, TM creation can throw while the map loads."""
+    for i in range(attempts):
+        try:
+            return client.get_trafficmanager(port)
+        except RuntimeError:
+            if i == attempts - 1:
+                raise
+            time.sleep(3)
+
+
 def _wait_for_vehicle(world, role_name: str, step, max_ticks: int = 3000):
     for _ in range(max_ticks):
         for a in world.get_actors().filter("vehicle.*"):
             if a.attributes.get("role_name") == role_name:
                 return a
-        step()
+        try:
+            step()
+        except RuntimeError:
+            # synchronous world with nobody ticking yet (driver not started)
+            time.sleep(1)
     raise RuntimeError(f"no vehicle with role_name={role_name!r} appeared")
 
 
@@ -371,7 +386,7 @@ def cmd_drive(args: argparse.Namespace) -> int:
     settings.synchronous_mode = True
     settings.fixed_delta_seconds = 1.0 / cfg.fps
     world.apply_settings(settings)
-    tm = client.get_trafficmanager(args.tm_port)
+    tm = _get_traffic_manager(client, args.tm_port)
     tm.set_synchronous_mode(True)
     if args.seed is not None:
         tm.set_random_device_seed(args.seed)

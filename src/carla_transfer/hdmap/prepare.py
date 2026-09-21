@@ -165,15 +165,12 @@ def prepare_scene(
     elif first_image == "cosmos3":
         control = work_dir / "control_wsm.mp4"
         job_args = list(cosmos3_args or [])
-        t25 = cfg.transfer25
-        if (t25.repo / "scripts" / "generate_control_videos.py").exists():
-            # Cosmos3's WSM hint was trained on this renderer's output.
-            from carla_transfer.hdmap.transfer25 import render_world_scenario
-
-            ws = render_world_scenario(t25, clip_dir, clip_id, work_dir / "ws")
-            shutil.copy(ws, control)
-            job_args = ["--control-fps", "30", *job_args]
-        elif local:
+        # The control video must come from the *same camera model OmniDreams
+        # rasterizes with* (the archive calibration through ludus): the first
+        # image inherits its framing, and a control rendered with another
+        # camera (cosmos-transfer2.5's renderer) left every lane and car
+        # offset from the HD map for the whole rollout.
+        if local:
             render_control_video_local(cfg, archive, control)
         else:
             render_control_video_docker(cfg, archive, control)
