@@ -184,3 +184,28 @@ venv as subprocesses: render the front camera, write a one-view
 - First container start pays the model download and a ~7 min
   torch.compile; the Inductor cache is persisted under
   `~/.cache/carla_transfer/torchinductor` so later starts take ~30 s.
+
+## 10 s scenario with traffic (two passes)
+
+OmniDreams renders dynamic objects from the archive's `clipgt/obstacle.parquet`
+(timestamped cuboid tracks, loaded once per scene), so live actors are
+recorded first and replayed while the model runs:
+
+```bash
+# pass 1: Traffic Manager drives hero + traffic near it; every actor pose is logged
+carla-transfer -c $C drive --spawn-at-archive-start --traffic 12 --seed 3 \
+    --record-tracks scenes/town10_tracks.json --sim-seconds 12 --no-realtime --destroy
+carla-transfer add-obstacles scenes/town10.usdz scenes/town10_tracks.json
+
+# pass 2: model session opens, the driver holds every actor still until the
+# first chunk exists (go file), then replays the log kinematically for 10 s
+carla-transfer -c $C run --follow --go-file go --sim-seconds 10 \
+    --record out.mp4 --record-input carla.mp4 &
+carla-transfer -c $C drive --replay-tracks scenes/town10_tracks.json --wait-for go --tick-fps 18 --destroy
+```
+
+`run --go-file` rebases frame timestamps to the release, matching the track
+log (t=0 at the first moving tick); standstill frames during the model's
+warm-up are dropped, everything after the release is queued without loss.
+Live per-chunk actors (the proto's `DynamicWorldState`) need an update API in
+ludus/flashdreams and are the next step.

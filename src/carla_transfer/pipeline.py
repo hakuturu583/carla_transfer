@@ -97,6 +97,14 @@ class StreamPipeline:
     def __exit__(self, *exc) -> None:
         self.stop(flush=exc[0] is None)
 
+    def set_backpressure(self, max_pending_chunks: int, drop_stale: bool) -> None:
+        """Change queue policy at runtime (e.g. drop standstill frames while
+        the model warms up, then queue everything)."""
+        with self._cv:
+            self._max_pending = max_pending_chunks
+            self.drop_stale = drop_stale
+            self._cv.notify_all()
+
     # -- input ---------------------------------------------------------------
 
     def push(self, frame: Frame) -> None:

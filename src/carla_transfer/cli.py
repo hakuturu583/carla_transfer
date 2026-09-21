@@ -82,6 +82,24 @@ def cmd_prepare_scene(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_add_obstacles(args: argparse.Namespace) -> int:
+    """Write a `drive --record-tracks` log into the archive as clipgt/obstacle.parquet."""
+    import zipfile
+
+    from carla_transfer.carla.tracks import load_tracks, obstacle_parquet_bytes
+    from carla_transfer.hdmap.prepare import replace_in_archive
+
+    archive = Path(args.archive)
+    with zipfile.ZipFile(archive) as zf:
+        import yaml
+
+        clip_id = str(yaml.safe_load(zf.read("metadata.yaml"))["scene_id"])
+    data = obstacle_parquet_bytes(load_tracks(args.tracks), clip_id)
+    replace_in_archive(archive, "clipgt/obstacle.parquet", data)
+    print(f"{archive}: clipgt/obstacle.parquet ({len(data)} bytes)")
+    return 0
+
+
 def cmd_carla(args: argparse.Namespace) -> int:
     from carla_transfer.docker.carla import CarlaServerManager
 
@@ -226,6 +244,19 @@ def cmd_run(args: argparse.Namespace) -> int:
     else:
         vehicle = _find_or_spawn_vehicle(world, args.role_name, spawn)
     src = CarlaCameraSource(world, vehicle, cfg.width, cfg.height)
+    input_sink = None
+    if args.record_input:
+        from carla_transfer.sinks import Mp4Sink
+
+        input_sink = Mp4Sink(Path(args.record_input), cfg.fps)
+    # Until the model has produced its first chunk the driver holds still, so
+    # dropping the (identical) frames that pile up meanwhile is harmless and
+    # keeps the model from working through a backlog of standstill.
+    if args.go_file:
+        pipe.set_backpressure(1, True)
+    released = False
+    n_pushed = 0
+    n_go = 0
     try:
         first = _first_frame(step, src)
         if not session_first:
@@ -234,7 +265,26 @@ def cmd_run(args: argparse.Namespace) -> int:
         t_start = time.monotonic()
         while not args.duration or time.monotonic() - t_start < args.duration:
             step()
-            pipe.push(src.get())
+            frame = src.get()
+            if args.go_file and not released and pipe.stats.chunks_generated >= 1:
+                pipe.set_backpressure(1 if args.sync_to_model else 100_000, args.drop_stale)
+                Path(args.go_file).touch()
+                released = True
+                n_go = n_pushed
+                log.info("first chunk done; released the driver via %s", args.go_file)
+            # Timestamps count from the release, matching the driver's track
+            # log (t=0 at the first moving tick); standstill frames stay at 0.
+            frame.timestamp_us = (
+                max(0, n_pushed - n_go) * (1_000_000 // cfg.fps)
+                if args.go_file
+                else frame.timestamp_us
+            )
+            n_pushed += 1
+            if input_sink is not None:
+                input_sink(frame.resized(cfg.width, cfg.height))
+            if args.sim_seconds and released and n_pushed - n_go >= int(args.sim_seconds * cfg.fps):
+                break
+            pipe.push(frame)
             if time.monotonic() - last_report > 5:
                 s = pipe.stats
                 log.info(
@@ -251,6 +301,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         pipe.stop()
         src.destroy()
         _close_sinks(sinks)
+        if input_sink is not None:
+            input_sink.close()
+        if args.go_file and Path(args.go_file).exists():
+            Path(args.go_file).unlink()
         if not follow:
             settings.synchronous_mode = False
             world.apply_settings(settings)
@@ -298,8 +352,16 @@ def _first_frame(step, src, max_ticks: int = 60):
 
 
 def cmd_drive(args: argparse.Namespace) -> int:
-    """Traffic-Manager driver: owns the synchronous tick; `run --follow` reads."""
+    """Traffic-Manager driver: owns the synchronous tick; `run --follow` reads.
+
+    --wait-for FILE holds every actor still (ticking, so cameras deliver)
+    until FILE exists — `run --go-file FILE` creates it once the model has
+    produced its first chunk. --record-tracks logs all actors for
+    `add-obstacles`; --replay-tracks plays such a log back kinematically.
+    """
     import carla
+
+    from carla_transfer.carla.tracks import TrackRecorder, TrackReplayer, load_tracks, spawn_traffic
 
     cfg = _load_config(args)
     client = carla.Client(args.carla_host, args.carla_port)
@@ -311,6 +373,8 @@ def cmd_drive(args: argparse.Namespace) -> int:
     world.apply_settings(settings)
     tm = client.get_trafficmanager(args.tm_port)
     tm.set_synchronous_mode(True)
+    if args.seed is not None:
+        tm.set_random_device_seed(args.seed)
 
     spawn = None
     if args.spawn_at_archive_start and cfg.omnidreams.scene_archive:
@@ -319,30 +383,88 @@ def cmd_drive(args: argparse.Namespace) -> int:
 
         poses, _ = archive_trajectory(Path(cfg.omnidreams.scene_archive))
         spawn = transform_from_rig_to_world(poses[0])
-    vehicle = _find_or_spawn_vehicle(world, args.role_name, spawn, autopilot=False)
-    vehicle.set_autopilot(True, args.tm_port)
-    if args.speed_pct:
-        tm.vehicle_percentage_speed_difference(vehicle, args.speed_pct)
-    tm.ignore_lights_percentage(vehicle, args.ignore_lights_pct)
-    log.info("hero %s on Traffic Manager (port %d) at %s", vehicle.id, args.tm_port, spawn)
+
+    replayer = None
+    traffic: list = []
+    if args.replay_tracks:
+        replayer = TrackReplayer(world, load_tracks(args.replay_tracks))
+        replayer.apply(0)
+        vehicle = replayer.hero(args.role_name)
+        if vehicle is None:
+            raise SystemExit("replay log has no hero")
+    else:
+        vehicle = _find_or_spawn_vehicle(world, args.role_name, spawn, autopilot=False)
+        if args.traffic:
+            world.tick()  # settle the hero so its location is valid
+            traffic = spawn_traffic(
+                world,
+                client,
+                args.traffic,
+                args.tm_port,
+                args.seed or 0,
+                near=vehicle.get_location(),
+            )
+    log.info("hero %s at %s", vehicle.id, vehicle.get_transform())
 
     period = 1.0 / (args.tick_fps or cfg.fps)
-    t_start = time.monotonic()
+    recorder = TrackRecorder(world, cfg.fps) if args.record_tracks else None
+
+    def paced_tick():
+        t0 = time.monotonic()
+        world.tick()
+        if args.realtime:
+            delay = period - (time.monotonic() - t0)
+            if delay > 0:
+                time.sleep(delay)
+
     try:
-        while not args.duration or time.monotonic() - t_start < args.duration:
-            t0 = time.monotonic()
-            world.tick()
-            if args.realtime:
-                delay = period - (time.monotonic() - t0)
-                if delay > 0:
-                    time.sleep(delay)
+        # Hold phase: everything still until the go file appears.
+        if args.wait_for:
+            log.info("holding until %s exists", args.wait_for)
+            while not Path(args.wait_for).exists():
+                paced_tick()
+            log.info("released")
+        if replayer is None:
+            vehicle.set_autopilot(True, args.tm_port)
+            if args.speed_pct:
+                tm.vehicle_percentage_speed_difference(vehicle, args.speed_pct)
+            tm.ignore_lights_percentage(vehicle, args.ignore_lights_pct)
+            for a in traffic:
+                tm.ignore_lights_percentage(a, args.ignore_lights_pct)
+        n_ticks = int(args.sim_seconds * cfg.fps) if args.sim_seconds else None
+        if replayer is not None and n_ticks is None:
+            n_ticks = replayer.frames
+        t_start = time.monotonic()
+        frame = 0
+        while True:
+            if n_ticks is not None and frame >= n_ticks:
+                break
+            if args.duration and time.monotonic() - t_start >= args.duration:
+                break
+            if replayer is not None:
+                replayer.apply(frame)
+            paced_tick()
+            if recorder is not None:
+                recorder.sample()
+            frame += 1
+        log.info("drove %d ticks (%.1f s sim)", frame, frame / cfg.fps)
     except KeyboardInterrupt:
         pass
     finally:
-        vehicle.set_autopilot(False, args.tm_port)
-        world.tick()
-        if args.destroy:
-            vehicle.destroy()
+        if recorder is not None:
+            recorder.save(args.record_tracks)
+        if replayer is None:
+            vehicle.set_autopilot(False, args.tm_port)
+            for a in traffic:
+                a.set_autopilot(False, args.tm_port)
+            world.tick()
+            if args.destroy:
+                for a in traffic:
+                    a.destroy()
+                vehicle.destroy()
+                world.tick()
+        elif args.destroy:
+            replayer.destroy()
             world.tick()
         settings.synchronous_mode = False
         world.apply_settings(settings)
@@ -441,6 +563,11 @@ def build_parser() -> argparse.ArgumentParser:
     )  # fmt: skip
     ps.set_defaults(fn=cmd_prepare_scene)
 
+    ao = sub.add_parser("add-obstacles")
+    ao.add_argument("archive")
+    ao.add_argument("tracks")
+    ao.set_defaults(fn=cmd_add_obstacles)
+
     ca = sub.add_parser("carla")
     ca.add_argument("action", choices=["up", "down", "logs"])
     ca.add_argument("--dry-run", action="store_true")
@@ -493,6 +620,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip chunks when the model falls behind (breaks rollout continuity)",
     )
+    r.add_argument("--go-file", help="create this file once the first chunk is generated "
+                   "(`drive --wait-for` releases on it); timestamps restart there")  # fmt: skip
+    r.add_argument("--sim-seconds", type=float, default=0.0,
+                   help="stop this many sim seconds after the release")  # fmt: skip
+    r.add_argument("--record-input", metavar="FILE.mp4", help="also record the CARLA camera")
     add_sink_args(r)
     r.set_defaults(fn=cmd_run)
 
@@ -509,6 +641,12 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--realtime", action=argparse.BooleanOptionalAction, default=True,
                    help="pace ticks at the configured fps")  # fmt: skip
     d.add_argument("--destroy", action="store_true", help="destroy the hero on exit")
+    d.add_argument("--traffic", type=int, default=0, help="background TM vehicles to spawn")
+    d.add_argument("--seed", type=int, default=None, help="Traffic Manager / spawn seed")
+    d.add_argument("--sim-seconds", type=float, default=0.0, help="stop after this much sim time")
+    d.add_argument("--wait-for", help="hold all actors still until this file exists")
+    d.add_argument("--record-tracks", help="write every actor's per-tick pose to this JSON")
+    d.add_argument("--replay-tracks", help="replay a --record-tracks log instead of driving")
     d.add_argument(
         "--tick-fps",
         type=float,
