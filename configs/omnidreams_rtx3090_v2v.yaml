@@ -1,6 +1,10 @@
-# OmniDreams video-to-video: CARLA frames guide the rollout (SDEdit-style).
-# Same as omnidreams_rtx3090.yaml plus guide + a schedule that starts below
-# pure noise. Lower the first step to keep more of the CARLA image.
+# OmniDreams video-to-video: each chunk's CARLA frames guide the rollout.
+# Same as omnidreams_rtx3090.yaml plus `guide`. guide_mode x0 blends the
+# first step's x0 estimate toward the CARLA latent (weight = how much CARLA
+# survives) and the two remaining steps re-synthesise a coherent image;
+# measured best at [1000, 450, 100] / 0.5 (475 ms per 8-frame chunk).
+# guide_mode init (SDEdit start, e.g. denoising_steps [600, 100]) leaves
+# artifacts that compound through the KV cache.
 backend: omnidreams
 width: 512
 height: 288
