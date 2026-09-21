@@ -499,6 +499,8 @@ def cmd_drive(args: argparse.Namespace) -> int:
 
     period = 1.0 / (args.tick_fps or cfg.fps)
     recorder = TrackRecorder(world, cfg.fps) if args.record_tracks else None
+    if recorder is not None and not args.no_parked:
+        recorder.add_static_vehicles(vehicle.get_location())
 
     def paced_tick():
         t0 = time.monotonic()
@@ -774,6 +776,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--dart-trigger-m", type=float, default=14.0, help="hero distance that releases it"
     )
     d.add_argument("--dart-speed", type=float, default=3.0, help="m/s")
+    d.add_argument(
+        "--no-parked", action="store_true", help="do not record the map's parked vehicles"
+    )
     d.add_argument("--route", help="TM junction choices for the hero, e.g. Straight,Straight,Right")
     d.add_argument(
         "--spawn-back-m",

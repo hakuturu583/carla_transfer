@@ -95,7 +95,64 @@ class TrackRecorder:
             )
         self.frame += 1
 
+    # CARLA's parked vehicles are map meshes (environment objects), not actors,
+    # so `get_actors()` never sees them; without this the model gets an empty
+    # kerb where CARLA renders a row of parked cars.
+    STATIC_LABELS = {
+        "Car": "automobile",
+        "Truck": "truck",
+        "Bus": "bus",
+        "Motorcycle": "motorcycle",
+        "Bicycle": "bicycle",
+    }
+
+    def add_static_vehicles(self, near, radius_m: float = 120.0) -> int:
+        """Record the map's parked vehicles within ``radius_m`` of ``near`` as
+        stationary tracks (role ``parked``). A prop can be split over several
+        meshes (``<name>_SM_0``, ``_SM_1`` …); the largest one is kept."""
+        import carla
+
+        best: dict[str, tuple[float, Any, str]] = {}
+        for label, category in self.STATIC_LABELS.items():
+            for obj in self.world.get_environment_objects(getattr(carla.CityObjectLabel, label)):
+                bb = obj.bounding_box
+                if near is not None and bb.location.distance(near) > radius_m:
+                    continue
+                base = obj.name.rsplit("_SM_", 1)[0]
+                volume = bb.extent.x * bb.extent.y * bb.extent.z
+                if base not in best or volume > best[base][0]:
+                    best[base] = (volume, obj, category)
+        for base, (_, obj, category) in best.items():
+            bb = obj.bounding_box
+            key = -(len(self.tracks) + 1)  # negative ids: not actors
+            self.tracks[key] = ActorTrack(
+                actor_id=key,
+                blueprint=f"static.{category}.{base}",
+                role_name="parked",
+                category=category,
+                size_lwh=(2 * bb.extent.x, 2 * bb.extent.y, 2 * bb.extent.z),
+                bbox_offset=(0.0, 0.0, 0.0),
+                samples=[
+                    [
+                        0.0,
+                        bb.location.x,
+                        bb.location.y,
+                        bb.location.z,
+                        bb.rotation.roll,
+                        bb.rotation.pitch,
+                        bb.rotation.yaw,
+                    ]
+                ],
+            )
+        log.info("recorded %d parked vehicles within %.0f m", len(best), radius_m)
+        return len(best)
+
     def save(self, path: str | Path) -> Path:
+        # Stationary tracks carry one sample; replicate it over the recording.
+        for t in self.tracks.values():
+            if t.role_name == "parked" and len(t.samples) == 1 and self.frame > 1:
+                s0 = t.samples[0]
+                t.samples = [[i / self.fps, *s0[1:]] for i in range(self.frame)]
         doc = {
             "fps": self.fps,
             "frames": self.frame,
@@ -243,8 +300,8 @@ class TrackReplayer:
         self.actors: list[tuple[Any, list[list[float]]]] = []
         lib = world.get_blueprint_library()
         for t in doc["tracks"]:
-            if not t["samples"]:
-                continue
+            if not t["samples"] or t["role_name"] == "parked":
+                continue  # parked vehicles are map meshes, already there
             bps = lib.filter(t["blueprint"]) or lib.filter("vehicle.*")
             bp = bps[0]
             if t["role_name"]:
