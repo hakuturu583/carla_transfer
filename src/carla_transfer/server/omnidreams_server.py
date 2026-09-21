@@ -68,6 +68,8 @@ class ServerOptions:
     offload_text_encoder: bool = True
     resolution_wh: tuple[int, int] | None = None
     fps: int | None = None
+    # Multiplier on the 1280x704 raster line widths; None = resolution ratio.
+    line_width_scale: float | None = None
     camera_name: str = "camera_front_wide_120fov"
     variant: str = "default"
     jpeg_quality: int = 90
@@ -149,7 +151,22 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
             manifest = dataclasses.replace(manifest, fps=self.opts.fps)
         w, h = manifest.resolution_wh
         self._manifest = manifest
-        self._raster = RasterConfig(width=w, height=h)
+        # RasterConfig's line widths are pixels tuned for the 1280x704 training
+        # raster; rendering straight at a smaller resolution would draw lines
+        # 2-3x thicker (relative to the frame) than the model ever saw.
+        ref = RasterConfig()
+        scale = self.opts.line_width_scale
+        if scale is None:
+            scale = min(w / ref.width, h / ref.height)
+        self._raster = RasterConfig(
+            width=w,
+            height=h,
+            line_width_px=max(1.0, ref.line_width_px * scale),
+            pole_width_px=max(1.0, ref.pole_width_px * scale),
+        )
+        log.info(
+            "raster %dx%d line width %.1f px (scale %.2f)", w, h, self._raster.line_width_px, scale
+        )
         self._chunk = ChunkConfig(
             fps=manifest.fps,
             initial_chunk_frames=INITIAL_CHUNK_FRAMES,
@@ -404,6 +421,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-offload-text-encoder", dest="offload", action="store_false")
     p.add_argument("--resolution", metavar="WxH", help="override the manifest resolution_wh")
     p.add_argument("--fps", type=int)
+    p.add_argument(
+        "--line-width-scale",
+        type=float,
+        default=None,
+        help="raster line width multiplier vs the 1280x704 defaults (default: resolution ratio; "
+        "1.0 = NVIDIA's unscaled 12 px)",
+    )
     p.add_argument("--camera", default="camera_front_wide_120fov")
     p.add_argument("--variant", default="default")
     p.add_argument("--jpeg-quality", type=int, default=90)
@@ -442,6 +466,7 @@ def main(argv: list[str] | None = None) -> int:
         offload_text_encoder=args.offload,
         resolution_wh=res,
         fps=args.fps,
+        line_width_scale=args.line_width_scale,
         camera_name=args.camera,
         variant=args.variant,
         jpeg_quality=args.jpeg_quality,

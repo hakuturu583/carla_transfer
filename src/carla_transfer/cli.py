@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import sys
 import time
 from pathlib import Path
@@ -395,7 +396,9 @@ def cmd_drive(args: argparse.Namespace) -> int:
     from carla_transfer.carla.tracks import (
         TrackRecorder,
         TrackReplayer,
+        find_crosswalk_ahead,
         load_tracks,
+        spawn_dart_walker,
         spawn_traffic,
         spawn_walkers,
         step_walkers,
@@ -421,10 +424,29 @@ def cmd_drive(args: argparse.Namespace) -> int:
 
         poses, _ = archive_trajectory(Path(cfg.omnidreams.scene_archive))
         spawn = transform_from_rig_to_world(poses[0])
+        if args.spawn_back_m:
+            # previous() branches at junctions; a spawn inside one confuses the
+            # Traffic Manager's route, so take a non-junction candidate.
+            cands = world.get_map().get_waypoint(spawn.location).previous(args.spawn_back_m)
+            wp = next((w for w in cands if not w.is_junction), cands[0])
+            spawn = wp.transform
+            spawn.location.z += 0.3
+        if args.spawn_ahead_m:
+            from carla_transfer.carla.tracks import advance_along_lane
+
+            wp = advance_along_lane(
+                world.get_map().get_waypoint(spawn.location), args.spawn_ahead_m
+            )
+            if wp is None:
+                raise SystemExit("lane ends before --spawn-ahead-m")
+            spawn = wp.transform
+            spawn.location.z += 0.3
 
     replayer = None
     traffic: list = []
     walkers: list = []
+    dart: list = []  # [(walker, ctrl, tf)] released when the hero nears the crosswalk
+    dart_cw = None
     if args.replay_tracks:
         replayer = TrackReplayer(world, load_tracks(args.replay_tracks))
         replayer.apply(0)
@@ -455,6 +477,24 @@ def cmd_drive(args: argparse.Namespace) -> int:
                 side=args.walkers_side,
             )
             world.tick()  # let the spawns land before any transform/physics call
+        if args.dart_crosswalk:
+            world.tick()
+            dart_cw = find_crosswalk_ahead(world.get_map(), vehicle.get_transform())
+            if dart_cw is None:
+                raise SystemExit(
+                    "no crosswalk 20-200 m ahead of the hero; use --spawn-ahead-m/--spawn-back-m"
+                )
+            dart = [
+                spawn_dart_walker(
+                    world,
+                    dart_cw,
+                    vehicle.get_transform(),
+                    args.seed or 0,
+                    side=args.walkers_side if args.walkers_side != "both" else "right",
+                    speed=args.dart_speed,
+                )
+            ]
+            world.tick()
     log.info("hero %s at %s", vehicle.id, vehicle.get_transform())
 
     period = 1.0 / (args.tick_fps or cfg.fps)
@@ -477,12 +517,15 @@ def cmd_drive(args: argparse.Namespace) -> int:
             log.info("released")
         if replayer is None:
             vehicle.set_autopilot(True, args.tm_port)
+            if args.route:
+                world.tick()  # TM registers the vehicle on a tick; set_route before that is lost
+                tm.set_route(vehicle, args.route.split(","))
             if args.speed_pct:
                 tm.vehicle_percentage_speed_difference(vehicle, args.speed_pct)
             tm.ignore_lights_percentage(vehicle, args.ignore_lights_pct)
             for a in traffic:
                 tm.ignore_lights_percentage(a, args.ignore_lights_pct)
-            for w, _, _ in walkers:
+            for w, *_ in walkers + dart:
                 w.set_simulate_physics(False)
         n_ticks = int(args.sim_seconds * cfg.fps) if args.sim_seconds else None
         if replayer is not None and n_ticks is None:
@@ -496,8 +539,18 @@ def cmd_drive(args: argparse.Namespace) -> int:
                 break
             if replayer is not None:
                 replayer.apply(frame)
-            elif walkers:
-                step_walkers(walkers, 1.0 / cfg.fps)
+            else:
+                if walkers:
+                    step_walkers(walkers, 1.0 / cfg.fps)
+                if dart and dart_cw is not None:
+                    loc = vehicle.get_location()
+                    gap = math.hypot(dart_cw["cx"] - loc.x, dart_cw["cy"] - loc.y)
+                    if gap <= args.dart_trigger_m:
+                        walkers += dart  # from now on it runs with the others
+                        dart = []
+                        log.info(
+                            "dart released at frame %d (hero %.1f m from the crosswalk)", frame, gap
+                        )
             paced_tick()
             if recorder is not None:
                 recorder.sample()
@@ -516,7 +569,7 @@ def cmd_drive(args: argparse.Namespace) -> int:
             if args.destroy:
                 for a in traffic:
                     a.destroy()
-                for w, _, _ in walkers:
+                for w, *_ in walkers + dart:
                     w.destroy()
                 vehicle.destroy()
                 world.tick()
@@ -712,6 +765,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     d.add_argument("--walkers-ahead", default="15,45", help="MIN,MAX metres ahead of the hero")
     d.add_argument("--walkers-side", choices=["left", "right", "both"], default="both")
+    d.add_argument(
+        "--dart-crosswalk",
+        action="store_true",
+        help="a pedestrian waits at the next crosswalk and runs out when the hero gets close",
+    )
+    d.add_argument(
+        "--dart-trigger-m", type=float, default=14.0, help="hero distance that releases it"
+    )
+    d.add_argument("--dart-speed", type=float, default=3.0, help="m/s")
+    d.add_argument("--route", help="TM junction choices for the hero, e.g. Straight,Straight,Right")
+    d.add_argument(
+        "--spawn-back-m",
+        type=float,
+        default=0.0,
+        help="spawn the hero this far back along its lane",
+    )
+    d.add_argument(
+        "--spawn-ahead-m",
+        type=float,
+        default=0.0,
+        help="spawn the hero this far ahead along its lane (straightest path through junctions)",
+    )
     d.add_argument("--seed", type=int, default=None, help="Traffic Manager / spawn seed")
     d.add_argument("--sim-seconds", type=float, default=0.0, help="stop after this much sim time")
     d.add_argument("--wait-for", help="hold all actors still until this file exists")

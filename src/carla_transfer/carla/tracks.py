@@ -422,12 +422,124 @@ def spawn_walkers(
     return out
 
 
-def step_walkers(walkers: list[tuple[Any, Any, Any]], dt: float) -> None:
-    """Advance each walker along its control direction by ``speed * dt``."""
+def step_walkers(walkers: list, dt: float) -> None:
+    """Advance each walker along its control direction by ``speed * dt``.
+    An entry may carry a 4th element, the remaining distance to walk; the
+    walker stops (speed 0) once it is used up."""
     import carla
 
-    for w, ctrl, tf in walkers:
-        tf.location += carla.Location(
-            x=ctrl.direction.x * ctrl.speed * dt, y=ctrl.direction.y * ctrl.speed * dt
-        )
+    for entry in walkers:
+        w, ctrl, tf = entry[0], entry[1], entry[2]
+        step = ctrl.speed * dt
+        if len(entry) > 3:
+            step = min(step, entry[3])
+            entry[3] -= step
+            if entry[3] <= 0.0:
+                ctrl.speed = 0.0
+        if step <= 0.0:
+            continue
+        tf.location += carla.Location(x=ctrl.direction.x * step, y=ctrl.direction.y * step)
         w.set_transform(tf)
+
+
+# -- crosswalk dart-out ---------------------------------------------------------
+
+
+def crosswalk_polygons(cmap) -> list[list[Any]]:
+    """`Map.get_crosswalks()` flattens every crosswalk into a closed ring of
+    points (first == last); split it back into one list per crosswalk."""
+    polys: list[list[Any]] = []
+    cur: list[Any] = []
+    for p in cmap.get_crosswalks():
+        cur.append(p)
+        if len(cur) > 1 and cur[0].distance(p) < 1e-3:
+            polys.append(cur)
+            cur = []
+    return polys
+
+
+def advance_along_lane(wp, dist_m: float, step_m: float = 2.0):
+    """Waypoint ``dist_m`` further along the lane, taking the straightest
+    successor at forks (so junctions are crossed rather than turned at).
+    Returns None if the lane ends."""
+    d = 0.0
+    while d < dist_m:
+        nxt = wp.next(step_m)
+        if not nxt:
+            return None
+        fwd = wp.transform.get_forward_vector()
+        wp = max(
+            nxt,
+            key=lambda n: (
+                fwd.x * n.transform.get_forward_vector().x
+                + fwd.y * n.transform.get_forward_vector().y
+            ),
+        )
+        d += step_m
+    return wp
+
+
+def find_crosswalk_ahead(cmap, transform, min_m: float = 20.0, max_m: float = 200.0) -> dict | None:
+    """The first crosswalk within ``[min_m, max_m]`` of road ahead of
+    ``transform``, following the lane (straightest successor at forks) so
+    curves and junctions are handled. Returns its centre, crossing axis
+    (unit, along the long side), half length and the road distance."""
+    centres = []
+    for poly in crosswalk_polygons(cmap):
+        pts = poly[:-1]
+        cx = sum(p.x for p in pts) / len(pts)
+        cy = sum(p.y for p in pts) / len(pts)
+        e = [(pts[i], pts[(i + 1) % len(pts)]) for i in range(len(pts))]
+        a, b = max(e, key=lambda ab: ab[0].distance(ab[1]))
+        length = a.distance(b)
+        centres.append((cx, cy, pts[0].z, (b.x - a.x) / length, (b.y - a.y) / length, length / 2))
+    wp = cmap.get_waypoint(transform.location)
+    step = 2.0
+    dist = 0.0
+    while dist < max_m:
+        wp = advance_along_lane(wp, step, step)
+        if wp is None:
+            return None
+        dist += step
+        if dist < min_m:
+            continue
+        loc = wp.transform.location
+        for cx, cy, cz, ax, ay, half in centres:
+            if math.hypot(cx - loc.x, cy - loc.y) <= 6.0:
+                return {"cx": cx, "cy": cy, "cz": cz, "ax": ax, "ay": ay,
+                        "half_len": half, "along": dist}  # fmt: skip
+    return None
+
+
+def spawn_dart_walker(
+    world, cw: dict, hero_transform, seed: int = 0, side: str = "right", speed: float = 3.0
+) -> list:
+    """A pedestrian waiting 1.5 m off the kerb at the crosswalk end on the
+    hero's ``side``, set to cross at ``speed`` (m/s, 3 = running)."""
+    import random
+
+    import carla
+
+    rng = random.Random(seed)
+    right = hero_transform.get_right_vector()
+    sgn = 1.0 if (cw["ax"] * right.x + cw["ay"] * right.y) > 0 else -1.0
+    if side == "left":
+        sgn = -sgn
+    ex = cw["cx"] + cw["ax"] * sgn * (cw["half_len"] + 1.5)
+    ey = cw["cy"] + cw["ay"] * sgn * (cw["half_len"] + 1.5)
+    lib = world.get_blueprint_library().filter("walker.pedestrian.*")
+    bp = rng.choice(lib)
+    if bp.has_attribute("is_invincible"):
+        bp.set_attribute("is_invincible", "false")
+    bp.set_attribute("role_name", "walker")
+    yaw = math.degrees(math.atan2(-cw["ay"] * sgn, -cw["ax"] * sgn))
+    tf = carla.Transform(carla.Location(x=ex, y=ey, z=cw["cz"] + 1.0), carla.Rotation(yaw=yaw))
+    w = world.try_spawn_actor(bp, tf)
+    if w is None:
+        raise RuntimeError(f"could not spawn the dart walker at {tf}")
+    ctrl = carla.WalkerControl(
+        direction=carla.Vector3D(-cw["ax"] * sgn, -cw["ay"] * sgn, 0.0), speed=speed
+    )
+    log.info("dart walker at %s, crosswalk %.1f m ahead", tf.location, cw["along"])
+    # Runs to the far kerb (crosswalk length + the 1.5 m it started off it) and stops.
+    return [w, ctrl, tf, 2 * cw["half_len"] + 1.5]

@@ -111,6 +111,7 @@ def export_clipgt_dir(m, spec: SceneSpec, out_dir: Path) -> str:
     scenario_path.write_text(yaml.safe_dump(scenario, sort_keys=False))
     clip_id = m.export_clipgt(str(out_dir), scenario=str(scenario_path))
     normalize_lane_line_styles(out_dir, clip_id)
+    strip_junction_interiors(out_dir, clip_id)
     return clip_id
 
 
@@ -145,6 +146,64 @@ def normalize_lane_line_styles(clip_dir: Path, clip_id: str) -> int:
     if changed:
         pq.write_table(pa.Table.from_pylist(rows, schema=table.schema), path)
     return changed
+
+
+def _point_in_polygon(poly: np.ndarray, x: float, y: float) -> bool:
+    xs, ys = poly[:, 0], poly[:, 1]
+    xj, yj = np.roll(xs, 1), np.roll(ys, 1)
+    crosses = (ys > y) != (yj > y)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        xint = (xj - xs) * (y - ys) / (yj - ys) + xs
+    return bool(np.count_nonzero(crosses & (x < xint)) % 2)
+
+
+def strip_junction_interiors(clip_dir: Path, clip_id: str) -> dict[str, int]:
+    """Cut road boundaries and lane lines out of intersection areas.
+
+    roadgen exports every junction connecting road with its own boundaries
+    and lane lines, so inside an intersection they criss-cross in every
+    direction; ClipGT proper leaves the intersection_area polygon and
+    nothing else there, and the world model was trained on that. Polylines
+    are split where they enter an area and the inside runs dropped. Returns
+    the number of rows removed per layer."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    ia_path = clip_dir / f"{clip_id}.intersection_area.parquet"
+    if not ia_path.exists():
+        return {}
+    areas = [
+        np.array([[p["x"], p["y"]] for p in r["intersection_area"]["location"]])
+        for r in pq.read_table(ia_path).to_pylist()
+    ]
+    areas = [a for a in areas if len(a) >= 3]
+
+    def inside(p) -> bool:
+        return any(_point_in_polygon(a, p["x"], p["y"]) for a in areas)
+
+    removed: dict[str, int] = {}
+    for layer, key in (("road_boundary", "location"), ("lane_line", "line_rail")):
+        path = clip_dir / f"{clip_id}.{layer}.parquet"
+        if not path.exists():
+            continue
+        table = pq.read_table(path)
+        out = []
+        for r in table.to_pylist():
+            rec = r[layer]
+            pts = rec[key]
+            runs: list[list] = [[]]
+            for p in pts:
+                if inside(p):
+                    if runs[-1]:
+                        runs.append([])
+                else:
+                    runs[-1].append(p)
+            for run in runs:
+                if len(run) >= 2:
+                    out.append({layer: {**rec, key: run}})
+        removed[layer] = table.num_rows - len(out)
+        pq.write_table(pa.Table.from_pylist(out, schema=table.schema), path)
+    return removed
 
 
 def rig_trajectory_from_egomotion(parquet_path: Path) -> dict:
@@ -208,3 +267,23 @@ def export_scene_archive(
         clip_dir = Path(tmp) / "clip"
         clip_id = export_clipgt_dir(m, spec, clip_dir)
         return pack_scene_archive(clip_dir, clip_id, spec, Path(out_path))
+
+
+def strip_junction_interiors_archive(archive: Path) -> dict[str, int]:
+    """:func:`strip_junction_interiors` for a packed scene archive, in place."""
+    import tempfile
+    import zipfile
+
+    from carla_transfer.hdmap.prepare import replace_in_archive
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        with zipfile.ZipFile(archive) as zf:
+            for layer in ("intersection_area", "road_boundary", "lane_line"):
+                (tmp_dir / f"x.{layer}.parquet").write_bytes(zf.read(f"clipgt/{layer}.parquet"))
+        removed = strip_junction_interiors(tmp_dir, "x")
+        for layer in removed:
+            replace_in_archive(
+                archive, f"clipgt/{layer}.parquet", (tmp_dir / f"x.{layer}.parquet").read_bytes()
+            )
+    return removed
