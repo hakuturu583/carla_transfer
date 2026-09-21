@@ -102,6 +102,11 @@ message VideoChunkRequest {
     SessionId session_id = 1;
 	common.Trajectory rig_trajectory = 2;  // Ego rig trajectory
     DynamicWorldState dynamic_state = 3; // within requested time range
+    // carla_transfer extension (not in upstream flashdreams): one RGB frame per
+    // pose that the generated chunk should stay close to, e.g. the simulator's
+    // own render. Starts the denoising from a partially noised encoding of these
+    // frames instead of pure noise (SDEdit-style video-to-video).
+    repeated Image guide_frames = 4;
 }
 
 // Per-camera output frames

@@ -101,6 +101,18 @@ class OmniDreamsConfig:
     initial_image: str = "archive"
     # Ask the server for the HD-map condition frames too (Frame.meta["hdmap"]).
     return_hdmap: bool = False
+    # Video-to-video: send the CARLA frames of each chunk as guide frames; the
+    # server starts denoising from their partially noised encoding instead
+    # of pure noise. Requires denoising_steps whose first step is < 1000.
+    guide: bool = False
+    # Server-side denoising schedule override (manifest default [1000, 100]).
+    # With guide=true use e.g. [600, 100]: the first value sets how much of
+    # the CARLA image survives (lower = closer to CARLA).
+    denoising_steps: list[int] | None = None
+    # Server-side guide policy: "init" (SDEdit start) or "x0" (on-schedule
+    # blend of the intermediate x0 toward the CARLA latent, weight below).
+    guide_mode: str = "init"
+    guide_weight: float = 0.5
     # Server-side settings, only used by `carla-transfer up` to build the
     # container command (carla_transfer.server.omnidreams_server). The manifest
     # is an interactive-drive manifest from the fork; the server resolution

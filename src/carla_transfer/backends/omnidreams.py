@@ -105,12 +105,23 @@ class OmniDreamsBackend(WorldModelBackend):
                 for f in sim_frames
             ]
         )
+        w, h = self.config.resolution
         req = video_model_pb2.VideoChunkRequest(
             session_id=video_model_pb2.SessionId(session_id=self._session_id),
             rig_trajectory=traj,
-            # TODO(details pending): populate from CARLA actors (vehicles,
-            # walkers) so the model renders dynamic agents.
+            # Live actors are baked into the archive (obstacle.parquet) for now.
             dynamic_state=video_model_pb2.DynamicWorldState(),
+            guide_frames=(
+                [
+                    video_model_pb2.Image(
+                        data=encode_image(f.resized(w, h).rgb, "JPEG", 95),
+                        format=video_model_pb2.JPEG,
+                    )
+                    for f in sim_frames
+                ]
+                if self.od.guide
+                else []
+            ),
         )
         ret = self._stub.render_video_chunk(req)
         out: list[Frame] = []

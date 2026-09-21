@@ -1,0 +1,28 @@
+# OmniDreams video-to-video: CARLA frames guide the rollout (SDEdit-style).
+# Same as omnidreams_rtx3090.yaml plus guide + a schedule that starts below
+# pure noise. Lower the first step to keep more of the CARLA image.
+backend: omnidreams
+width: 512
+height: 288
+fps: 30
+docker:
+  image: carla-transfer/omnidreams:latest
+  container_name: carla-transfer-omnidreams
+  startup_timeout_s: 1800
+omnidreams:
+  port: 50051
+  frames_per_chunk: 8
+  first_chunk_frames: 5
+  manifest: example_world_model_rtx3090.yaml
+  offload_text_encoder: true
+  camera_name: camera_front_wide_120fov
+  scene_archive: outputs/scenes/town10.usdz
+  initial_image: archive
+  guide: true
+  denoising_steps: [1000, 450, 100]
+  guide_mode: x0
+  guide_weight: 0.5
+  positive_prompt: >-
+    Driving scene from a front-facing car camera. Urban environment with roads,
+    vehicles, pedestrians, traffic signs, and buildings. Clear visibility,
+    realistic lighting, photorealistic quality. High resolution dashcam footage.

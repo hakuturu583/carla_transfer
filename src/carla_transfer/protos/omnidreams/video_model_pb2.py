@@ -33,7 +33,7 @@ from carla_transfer.protos.omnidreams import (
 
 
 DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
-    b'\n2carla_transfer/protos/omnidreams/video_model.proto\x12\x16omnidreams.video_model\x1a-carla_transfer/protos/omnidreams/common.proto\x1a-carla_transfer/protos/omnidreams/camera.proto"(\n\x0eStaticWorldMap\x12\x16\n\x0ehdmap_parquets\x18\x01 \x01(\x0c"\x1f\n\tSessionId\x12\x12\n\nsession_id\x18\x01 \x01(\t"\xa5\x01\n\x0c\x44ynamicActor\x12\x36\n\x08\x63lass_id\x18\x01 \x01(\x0e\x32$.omnidreams.video_model.ActorClassId\x12*\n\tbbox_dims\x18\x02 \x01(\x0b\x32\x17.omnidreams.common.AABB\x12\x31\n\ntrajectory\x18\x03 \x01(\x0b\x32\x1d.omnidreams.common.Trajectory"I\n\x11\x44ynamicWorldState\x12\x34\n\x06\x61\x63tors\x18\x01 \x03(\x0b\x32$.omnidreams.video_model.DynamicActor"J\n\x05Image\x12\x0c\n\x04\x64\x61ta\x18\x01 \x01(\x0c\x12\x33\n\x06\x66ormat\x18\x02 \x01(\x0e\x32#.omnidreams.video_model.ImageFormat"0\n\nTextPrompt\x12\x10\n\x08positive\x18\x01 \x01(\t\x12\x10\n\x08negative\x18\x02 \x01(\t"J\n\x0c\x44\x65\x62ugOptions\x12\x1b\n\x13return_hdmap_frames\x18\x01 \x01(\x08\x12\x1d\n\x15skip_video_generation\x18\x02 \x01(\x08"\xf9\x02\n\x0eSessionRequest\x12@\n\x10static_world_map\x18\x01 \x01(\x0b\x32&.omnidreams.video_model.StaticWorldMap\x12\x37\n\x0btext_prompt\x18\x02 \x01(\x0b\x32".omnidreams.video_model.TextPrompt\x12;\n\rdebug_options\x18\x03 \x01(\x0b\x32$.omnidreams.video_model.DebugOptions\x12\x33\n\x0c\x63\x61mera_specs\x18\x04 \x03(\x0b\x32\x1d.omnidreams.camera.CameraSpec\x12\x35\n\x0einitial_frames\x18\x05 \x03(\x0b\x32\x1d.omnidreams.video_model.Image\x12.\n\rrig_to_camera\x18\x06 \x03(\x0b\x32\x17.omnidreams.common.Pose\x12\x13\n\x0brandom_seed\x18\x07 \x01(\x06")\n\x13SessionCloseRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t"\xc3\x01\n\x11VideoChunkRequest\x12\x35\n\nsession_id\x18\x01 \x01(\x0b\x32!.omnidreams.video_model.SessionId\x12\x35\n\x0erig_trajectory\x18\x02 \x01(\x0b\x32\x1d.omnidreams.common.Trajectory\x12@\n\rdynamic_state\x18\x03 \x01(\x0b\x32).omnidreams.video_model.DynamicWorldState"\x9b\x01\n\x0c\x43\x61meraOutput\x12\x19\n\x11\x63\x61mera_logical_id\x18\x01 \x01(\t\x12\x31\n\nrgb_frames\x18\x02 \x03(\x0b\x32\x1d.omnidreams.video_model.Image\x12=\n\x16hdmap_condition_frames\x18\x03 \x03(\x0b\x32\x1d.omnidreams.video_model.Image"P\n\x10VideoChunkReturn\x12<\n\x0e\x63\x61mera_outputs\x18\x01 \x03(\x0b\x32$.omnidreams.video_model.CameraOutput"\x81\x01\n\x11StartSessionEntry\x12\x37\n\x07request\x18\x01 \x01(\x0b\x32&.omnidreams.video_model.SessionRequest\x12\x33\n\x08response\x18\x02 \x01(\x0b\x32!.omnidreams.video_model.SessionId"\x8f\x01\n\x15RenderVideoChunkEntry\x12:\n\x07request\x18\x01 \x01(\x0b\x32).omnidreams.video_model.VideoChunkRequest\x12:\n\x08response\x18\x02 \x01(\x0b\x32(.omnidreams.video_model.VideoChunkReturn"}\n\x11\x43loseSessionEntry\x12<\n\x07request\x18\x01 \x01(\x0b\x32+.omnidreams.video_model.SessionCloseRequest\x12*\n\x08response\x18\x02 \x01(\x0b\x32\x18.omnidreams.common.Empty"\x9f\x02\n\x08LogEntry\x12\x0b\n\x03seq\x18\x01 \x01(\x04\x12\x14\n\x0ctimestamp_ns\x18\x02 \x01(\x04\x12\x13\n\x0b\x64uration_ns\x18\x03 \x01(\x04\x12\x42\n\rstart_session\x18\n \x01(\x0b\x32).omnidreams.video_model.StartSessionEntryH\x00\x12K\n\x12render_video_chunk\x18\x0b \x01(\x0b\x32-.omnidreams.video_model.RenderVideoChunkEntryH\x00\x12\x42\n\rclose_session\x18\x0c \x01(\x0b\x32).omnidreams.video_model.CloseSessionEntryH\x00\x42\x06\n\x04\x63\x61ll*W\n\x0c\x41\x63torClassId\x12\x0b\n\x07INVALID\x10\x00\x12\x07\n\x03\x43\x41R\x10\x01\x12\t\n\x05TRUCK\x10\x02\x12\x0e\n\nPEDESTRIAN\x10\x03\x12\x0b\n\x07\x43YCLIST\x10\x04\x12\t\n\x05OTHER\x10\x05*e\n\x0bImageFormat\x12\r\n\tUNDEFINED\x10\x00\x12\x07\n\x03PNG\x10\x01\x12\x08\n\x04JPEG\x10\x02\x12\x0c\n\x08JPEG2000\x10\x03\x12\x14\n\x10RGB_UINT8_PLANAR\x10\x04\x12\x07\n\x03\x41VC\x10\x05\x12\x07\n\x03\x41V1\x10\x06\x32\xf9\x02\n\x11WorldModelService\x12Z\n\rstart_session\x12&.omnidreams.video_model.SessionRequest\x1a!.omnidreams.video_model.SessionId\x12V\n\rclose_session\x12+.omnidreams.video_model.SessionCloseRequest\x1a\x18.omnidreams.common.Empty\x12i\n\x12render_video_chunk\x12).omnidreams.video_model.VideoChunkRequest\x1a(.omnidreams.video_model.VideoChunkReturn\x12\x45\n\x0bget_version\x12\x18.omnidreams.common.Empty\x1a\x1c.omnidreams.common.VersionIdb\x06proto3'
+    b'\n2carla_transfer/protos/omnidreams/video_model.proto\x12\x16omnidreams.video_model\x1a-carla_transfer/protos/omnidreams/common.proto\x1a-carla_transfer/protos/omnidreams/camera.proto"(\n\x0eStaticWorldMap\x12\x16\n\x0ehdmap_parquets\x18\x01 \x01(\x0c"\x1f\n\tSessionId\x12\x12\n\nsession_id\x18\x01 \x01(\t"\xa5\x01\n\x0c\x44ynamicActor\x12\x36\n\x08\x63lass_id\x18\x01 \x01(\x0e\x32$.omnidreams.video_model.ActorClassId\x12*\n\tbbox_dims\x18\x02 \x01(\x0b\x32\x17.omnidreams.common.AABB\x12\x31\n\ntrajectory\x18\x03 \x01(\x0b\x32\x1d.omnidreams.common.Trajectory"I\n\x11\x44ynamicWorldState\x12\x34\n\x06\x61\x63tors\x18\x01 \x03(\x0b\x32$.omnidreams.video_model.DynamicActor"J\n\x05Image\x12\x0c\n\x04\x64\x61ta\x18\x01 \x01(\x0c\x12\x33\n\x06\x66ormat\x18\x02 \x01(\x0e\x32#.omnidreams.video_model.ImageFormat"0\n\nTextPrompt\x12\x10\n\x08positive\x18\x01 \x01(\t\x12\x10\n\x08negative\x18\x02 \x01(\t"J\n\x0c\x44\x65\x62ugOptions\x12\x1b\n\x13return_hdmap_frames\x18\x01 \x01(\x08\x12\x1d\n\x15skip_video_generation\x18\x02 \x01(\x08"\xf9\x02\n\x0eSessionRequest\x12@\n\x10static_world_map\x18\x01 \x01(\x0b\x32&.omnidreams.video_model.StaticWorldMap\x12\x37\n\x0btext_prompt\x18\x02 \x01(\x0b\x32".omnidreams.video_model.TextPrompt\x12;\n\rdebug_options\x18\x03 \x01(\x0b\x32$.omnidreams.video_model.DebugOptions\x12\x33\n\x0c\x63\x61mera_specs\x18\x04 \x03(\x0b\x32\x1d.omnidreams.camera.CameraSpec\x12\x35\n\x0einitial_frames\x18\x05 \x03(\x0b\x32\x1d.omnidreams.video_model.Image\x12.\n\rrig_to_camera\x18\x06 \x03(\x0b\x32\x17.omnidreams.common.Pose\x12\x13\n\x0brandom_seed\x18\x07 \x01(\x06")\n\x13SessionCloseRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t"\xf8\x01\n\x11VideoChunkRequest\x12\x35\n\nsession_id\x18\x01 \x01(\x0b\x32!.omnidreams.video_model.SessionId\x12\x35\n\x0erig_trajectory\x18\x02 \x01(\x0b\x32\x1d.omnidreams.common.Trajectory\x12@\n\rdynamic_state\x18\x03 \x01(\x0b\x32).omnidreams.video_model.DynamicWorldState\x12\x33\n\x0cguide_frames\x18\x04 \x03(\x0b\x32\x1d.omnidreams.video_model.Image"\x9b\x01\n\x0c\x43\x61meraOutput\x12\x19\n\x11\x63\x61mera_logical_id\x18\x01 \x01(\t\x12\x31\n\nrgb_frames\x18\x02 \x03(\x0b\x32\x1d.omnidreams.video_model.Image\x12=\n\x16hdmap_condition_frames\x18\x03 \x03(\x0b\x32\x1d.omnidreams.video_model.Image"P\n\x10VideoChunkReturn\x12<\n\x0e\x63\x61mera_outputs\x18\x01 \x03(\x0b\x32$.omnidreams.video_model.CameraOutput"\x81\x01\n\x11StartSessionEntry\x12\x37\n\x07request\x18\x01 \x01(\x0b\x32&.omnidreams.video_model.SessionRequest\x12\x33\n\x08response\x18\x02 \x01(\x0b\x32!.omnidreams.video_model.SessionId"\x8f\x01\n\x15RenderVideoChunkEntry\x12:\n\x07request\x18\x01 \x01(\x0b\x32).omnidreams.video_model.VideoChunkRequest\x12:\n\x08response\x18\x02 \x01(\x0b\x32(.omnidreams.video_model.VideoChunkReturn"}\n\x11\x43loseSessionEntry\x12<\n\x07request\x18\x01 \x01(\x0b\x32+.omnidreams.video_model.SessionCloseRequest\x12*\n\x08response\x18\x02 \x01(\x0b\x32\x18.omnidreams.common.Empty"\x9f\x02\n\x08LogEntry\x12\x0b\n\x03seq\x18\x01 \x01(\x04\x12\x14\n\x0ctimestamp_ns\x18\x02 \x01(\x04\x12\x13\n\x0b\x64uration_ns\x18\x03 \x01(\x04\x12\x42\n\rstart_session\x18\n \x01(\x0b\x32).omnidreams.video_model.StartSessionEntryH\x00\x12K\n\x12render_video_chunk\x18\x0b \x01(\x0b\x32-.omnidreams.video_model.RenderVideoChunkEntryH\x00\x12\x42\n\rclose_session\x18\x0c \x01(\x0b\x32).omnidreams.video_model.CloseSessionEntryH\x00\x42\x06\n\x04\x63\x61ll*W\n\x0c\x41\x63torClassId\x12\x0b\n\x07INVALID\x10\x00\x12\x07\n\x03\x43\x41R\x10\x01\x12\t\n\x05TRUCK\x10\x02\x12\x0e\n\nPEDESTRIAN\x10\x03\x12\x0b\n\x07\x43YCLIST\x10\x04\x12\t\n\x05OTHER\x10\x05*e\n\x0bImageFormat\x12\r\n\tUNDEFINED\x10\x00\x12\x07\n\x03PNG\x10\x01\x12\x08\n\x04JPEG\x10\x02\x12\x0c\n\x08JPEG2000\x10\x03\x12\x14\n\x10RGB_UINT8_PLANAR\x10\x04\x12\x07\n\x03\x41VC\x10\x05\x12\x07\n\x03\x41V1\x10\x06\x32\xf9\x02\n\x11WorldModelService\x12Z\n\rstart_session\x12&.omnidreams.video_model.SessionRequest\x1a!.omnidreams.video_model.SessionId\x12V\n\rclose_session\x12+.omnidreams.video_model.SessionCloseRequest\x1a\x18.omnidreams.common.Empty\x12i\n\x12render_video_chunk\x12).omnidreams.video_model.VideoChunkRequest\x1a(.omnidreams.video_model.VideoChunkReturn\x12\x45\n\x0bget_version\x12\x18.omnidreams.common.Empty\x1a\x1c.omnidreams.common.VersionIdb\x06proto3'
 )
 
 _globals = globals()
@@ -43,10 +43,10 @@ _builder.BuildTopDescriptorsAndMessages(
 )
 if not _descriptor._USE_C_DESCRIPTORS:
     DESCRIPTOR._loaded_options = None
-    _globals["_ACTORCLASSID"]._serialized_start = 2248
-    _globals["_ACTORCLASSID"]._serialized_end = 2335
-    _globals["_IMAGEFORMAT"]._serialized_start = 2337
-    _globals["_IMAGEFORMAT"]._serialized_end = 2438
+    _globals["_ACTORCLASSID"]._serialized_start = 2301
+    _globals["_ACTORCLASSID"]._serialized_end = 2388
+    _globals["_IMAGEFORMAT"]._serialized_start = 2390
+    _globals["_IMAGEFORMAT"]._serialized_end = 2491
     _globals["_STATICWORLDMAP"]._serialized_start = 172
     _globals["_STATICWORLDMAP"]._serialized_end = 212
     _globals["_SESSIONID"]._serialized_start = 214
@@ -66,19 +66,19 @@ if not _descriptor._USE_C_DESCRIPTORS:
     _globals["_SESSIONCLOSEREQUEST"]._serialized_start = 1072
     _globals["_SESSIONCLOSEREQUEST"]._serialized_end = 1113
     _globals["_VIDEOCHUNKREQUEST"]._serialized_start = 1116
-    _globals["_VIDEOCHUNKREQUEST"]._serialized_end = 1311
-    _globals["_CAMERAOUTPUT"]._serialized_start = 1314
-    _globals["_CAMERAOUTPUT"]._serialized_end = 1469
-    _globals["_VIDEOCHUNKRETURN"]._serialized_start = 1471
-    _globals["_VIDEOCHUNKRETURN"]._serialized_end = 1551
-    _globals["_STARTSESSIONENTRY"]._serialized_start = 1554
-    _globals["_STARTSESSIONENTRY"]._serialized_end = 1683
-    _globals["_RENDERVIDEOCHUNKENTRY"]._serialized_start = 1686
-    _globals["_RENDERVIDEOCHUNKENTRY"]._serialized_end = 1829
-    _globals["_CLOSESESSIONENTRY"]._serialized_start = 1831
-    _globals["_CLOSESESSIONENTRY"]._serialized_end = 1956
-    _globals["_LOGENTRY"]._serialized_start = 1959
-    _globals["_LOGENTRY"]._serialized_end = 2246
-    _globals["_WORLDMODELSERVICE"]._serialized_start = 2441
-    _globals["_WORLDMODELSERVICE"]._serialized_end = 2818
+    _globals["_VIDEOCHUNKREQUEST"]._serialized_end = 1364
+    _globals["_CAMERAOUTPUT"]._serialized_start = 1367
+    _globals["_CAMERAOUTPUT"]._serialized_end = 1522
+    _globals["_VIDEOCHUNKRETURN"]._serialized_start = 1524
+    _globals["_VIDEOCHUNKRETURN"]._serialized_end = 1604
+    _globals["_STARTSESSIONENTRY"]._serialized_start = 1607
+    _globals["_STARTSESSIONENTRY"]._serialized_end = 1736
+    _globals["_RENDERVIDEOCHUNKENTRY"]._serialized_start = 1739
+    _globals["_RENDERVIDEOCHUNKENTRY"]._serialized_end = 1882
+    _globals["_CLOSESESSIONENTRY"]._serialized_start = 1884
+    _globals["_CLOSESESSIONENTRY"]._serialized_end = 2009
+    _globals["_LOGENTRY"]._serialized_start = 2012
+    _globals["_LOGENTRY"]._serialized_end = 2299
+    _globals["_WORLDMODELSERVICE"]._serialized_start = 2494
+    _globals["_WORLDMODELSERVICE"]._serialized_end = 2871
 # @@protoc_insertion_point(module_scope)

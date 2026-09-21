@@ -137,3 +137,15 @@ def test_pipeline_sends_5_then_8_poses(server, tmp_path):
             pipe.push(Frame(np.zeros((32, 64, 3), np.uint8), i * 1000))
     assert [len(r.rig_trajectory.poses) for r in svc.chunk_reqs] == [5, 8, 8]
     assert len(got) == 21
+
+
+def test_guide_frames_are_sent_when_enabled(server, tmp_path):
+    svc, port = server
+    cfg = _cfg(port, tmp_path)
+    cfg.omnidreams.guide = True
+    with OmniDreamsBackend(cfg) as be:
+        be.open(Frame(np.zeros((32, 64, 3), np.uint8), 0))
+        be.generate([Frame(np.full((32, 64, 3), 9, np.uint8), i * 1000) for i in range(8)])
+    req = svc.chunk_reqs[0]
+    assert len(req.guide_frames) == 8
+    assert decode_image(req.guide_frames[0].data).shape == (32, 64, 3)

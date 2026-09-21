@@ -66,6 +66,12 @@ INITIAL_CHUNK_FRAMES = 5
 class ServerOptions:
     manifest: str = "example_world_model_rtx3090.yaml"
     offload_text_encoder: bool = True
+    denoising_steps: list[int] | None = None
+    # Video-to-video guide policy (only matters when requests carry guide
+    # frames): "init" = SDEdit start at the first schedule step, "x0" =
+    # on-schedule blend of every intermediate x0 toward the guide.
+    guide_mode: str = "init"
+    guide_weight: float = 0.5
     resolution_wh: tuple[int, int] | None = None
     fps: int | None = None
     camera_name: str = "camera_front_wide_120fov"
@@ -135,7 +141,14 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
             offload_text_encoder=self.opts.offload_text_encoder,
         )
         self._backend.warmup_model()
-        log.info("world model ready")
+        session = self._backend._session  # FlashdreamsWorldModelSession
+        session.guide_mode = self.opts.guide_mode
+        session.guide_weight = self.opts.guide_weight
+        log.info(
+            "world model ready (guide_mode=%s weight=%.2f)",
+            self.opts.guide_mode,
+            self.opts.guide_weight,
+        )
 
     def _configure(self) -> None:
         from omnidreams.interactive_drive.cli import resolve_manifest_path
@@ -147,6 +160,10 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
             manifest = dataclasses.replace(manifest, resolution_wh=self.opts.resolution_wh)
         if self.opts.fps is not None:
             manifest = dataclasses.replace(manifest, fps=self.opts.fps)
+        if self.opts.denoising_steps:
+            manifest = dataclasses.replace(
+                manifest, denoising_steps=list(self.opts.denoising_steps)
+            )
         w, h = manifest.resolution_wh
         self._manifest = manifest
         self._raster = RasterConfig(width=w, height=h)
@@ -300,6 +317,14 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
                     roll_rad=roll,
                 ),
             )
+            guide = None
+            if request.guide_frames:
+                if len(request.guide_frames) != len(poses_pb):
+                    context.abort(
+                        grpc.StatusCode.INVALID_ARGUMENT,
+                        f"{len(request.guide_frames)} guide frames for {len(poses_pb)} poses",
+                    )
+                guide = [self._fit(decode_image(g.data)) for g in request.guide_frames]
             hdmap_frames: list = []
             if s.raster_only:
                 raster = self._rasterizer.render_chunk(poses, ts)
@@ -307,9 +332,9 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
                 hdmap_frames = [np.asarray(f.rgb_host_uint8) for f in raster.frames]
             else:
                 if s.chunks_rendered == 0:
-                    out = self._backend.render_first_chunk(traj)
+                    out = self._backend.render_first_chunk(traj, guide_frames=guide)
                 else:
-                    out = self._backend.render_next_chunk(traj)
+                    out = self._backend.render_next_chunk(traj, guide_frames=guide)
                 # In the world-model path PresentedFrame.rgb_host_uint8 is the
                 # HD-map *condition* frame; the generated image is
                 # model_rgb_host_uint8 (see backends/world_model.py _merge).
@@ -404,6 +429,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-offload-text-encoder", dest="offload", action="store_false")
     p.add_argument("--resolution", metavar="WxH", help="override the manifest resolution_wh")
     p.add_argument("--fps", type=int)
+    p.add_argument("--guide-mode", choices=["init", "x0"], default="init")
+    p.add_argument("--guide-weight", type=float, default=0.5)
+    p.add_argument(
+        "--denoising-steps",
+        help="override the manifest schedule, e.g. 600,100 for guided (video-to-video) runs",
+    )
     p.add_argument("--camera", default="camera_front_wide_120fov")
     p.add_argument("--variant", default="default")
     p.add_argument("--jpeg-quality", type=int, default=90)
@@ -442,6 +473,11 @@ def main(argv: list[str] | None = None) -> int:
         offload_text_encoder=args.offload,
         resolution_wh=res,
         fps=args.fps,
+        denoising_steps=(
+            [int(x) for x in args.denoising_steps.split(",")] if args.denoising_steps else None
+        ),
+        guide_mode=args.guide_mode,
+        guide_weight=args.guide_weight,
         camera_name=args.camera,
         variant=args.variant,
         jpeg_quality=args.jpeg_quality,

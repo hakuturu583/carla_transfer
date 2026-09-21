@@ -151,6 +151,11 @@ class ContainerManager:
         ]  # fmt: skip
         if not c.omnidreams.offload_text_encoder:
             cmd.append("--no-offload-text-encoder")
+        if c.omnidreams.denoising_steps:
+            cmd += ["--denoising-steps", ",".join(str(t) for t in c.omnidreams.denoising_steps)]
+        if c.omnidreams.guide:
+            cmd += ["--guide-mode", c.omnidreams.guide_mode,
+                    "--guide-weight", str(c.omnidreams.guide_weight)]  # fmt: skip
         if raster_only:
             cmd.append("--raster-only")
         return cmd
