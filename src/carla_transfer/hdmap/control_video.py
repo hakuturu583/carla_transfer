@@ -120,9 +120,19 @@ def write_video(frames: list[np.ndarray], path: Path, fps: float) -> Path:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     stack = np.stack(frames)
-    try:  # pyav backend (imageio[pyav])
-        iio.imwrite(path, stack, plugin="pyav", fps=fps, codec="libx264")
-    except (ImportError, ValueError, TypeError):  # imageio-ffmpeg backend
+    try:  # PyAV directly: imageio's pyav plugin trips over the stream size
+        import av
+
+        with av.open(str(path), mode="w") as out:
+            stream = out.add_stream("libx264", rate=int(round(fps)))
+            stream.width, stream.height = int(stack.shape[2]), int(stack.shape[1])
+            stream.pix_fmt = "yuv420p"
+            for frame in stack:
+                for packet in stream.encode(av.VideoFrame.from_ndarray(frame, format="rgb24")):
+                    out.mux(packet)
+            for packet in stream.encode():
+                out.mux(packet)
+    except ImportError:  # imageio-ffmpeg backend
         iio.imwrite(path, stack, plugin="FFMPEG", fps=fps, codec="libx264", macro_block_size=1)
     return path
 

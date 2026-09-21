@@ -379,7 +379,14 @@ def cmd_drive(args: argparse.Namespace) -> int:
     """
     import carla
 
-    from carla_transfer.carla.tracks import TrackRecorder, TrackReplayer, load_tracks, spawn_traffic
+    from carla_transfer.carla.tracks import (
+        TrackRecorder,
+        TrackReplayer,
+        load_tracks,
+        spawn_traffic,
+        spawn_walkers,
+        step_walkers,
+    )
 
     cfg = _load_config(args)
     client = carla.Client(args.carla_host, args.carla_port)
@@ -404,6 +411,7 @@ def cmd_drive(args: argparse.Namespace) -> int:
 
     replayer = None
     traffic: list = []
+    walkers: list = []
     if args.replay_tracks:
         replayer = TrackReplayer(world, load_tracks(args.replay_tracks))
         replayer.apply(0)
@@ -421,6 +429,11 @@ def cmd_drive(args: argparse.Namespace) -> int:
                 args.tm_port,
                 args.seed or 0,
                 near=vehicle.get_location(),
+            )
+        if args.walkers:
+            world.tick()
+            walkers = spawn_walkers(
+                world, args.walkers, args.seed or 0, near=vehicle.get_location()
             )
     log.info("hero %s at %s", vehicle.id, vehicle.get_transform())
 
@@ -449,6 +462,8 @@ def cmd_drive(args: argparse.Namespace) -> int:
             tm.ignore_lights_percentage(vehicle, args.ignore_lights_pct)
             for a in traffic:
                 tm.ignore_lights_percentage(a, args.ignore_lights_pct)
+            for w, _, _ in walkers:
+                w.set_simulate_physics(False)
         n_ticks = int(args.sim_seconds * cfg.fps) if args.sim_seconds else None
         if replayer is not None and n_ticks is None:
             n_ticks = replayer.frames
@@ -461,6 +476,8 @@ def cmd_drive(args: argparse.Namespace) -> int:
                 break
             if replayer is not None:
                 replayer.apply(frame)
+            elif walkers:
+                step_walkers(walkers, 1.0 / cfg.fps)
             paced_tick()
             if recorder is not None:
                 recorder.sample()
@@ -479,6 +496,8 @@ def cmd_drive(args: argparse.Namespace) -> int:
             if args.destroy:
                 for a in traffic:
                     a.destroy()
+                for w, _, _ in walkers:
+                    w.destroy()
                 vehicle.destroy()
                 world.tick()
         elif args.destroy:
@@ -665,6 +684,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="pace ticks at the configured fps")  # fmt: skip
     d.add_argument("--destroy", action="store_true", help="destroy the hero on exit")
     d.add_argument("--traffic", type=int, default=0, help="background TM vehicles to spawn")
+    d.add_argument(
+        "--walkers",
+        type=int,
+        default=0,
+        help="pedestrians on the sidewalks ahead that cross the road on release",
+    )
     d.add_argument("--seed", type=int, default=None, help="Traffic Manager / spawn seed")
     d.add_argument("--sim-seconds", type=float, default=0.0, help="stop after this much sim time")
     d.add_argument("--wait-for", help="hold all actors still until this file exists")

@@ -344,3 +344,84 @@ def spawn_traffic(
             actors.append(a)
     log.info("spawned %d traffic vehicles", len(actors))
     return actors
+
+
+def spawn_walkers(
+    world, n_walkers: int, seed: int = 0, near=None, ahead_m: tuple[float, float] = (15.0, 45.0)
+) -> list[tuple[Any, Any]]:
+    """Pedestrians on the sidewalks ahead of ``near`` (the hero), each paired
+    with a straight-line crossing direction towards the opposite sidewalk.
+
+    Returns ``[(walker, carla.WalkerControl, carla.Transform)]``; the caller advances them
+    with :func:`step_walkers` once the scenario is released so they hold
+    still during the first-chunk wait. Walking is kinematic: a walker steps
+    off the kerb at 1.2–1.8 m/s and keeps that heading, so it crosses the
+    road in front of the camera within a 10 s rollout. (CARLA 0.10's
+    WalkerControl moves walkers at ~0.1 m/s in synchronous mode whatever the
+    requested speed, so the transform is set explicitly per tick, from the
+    transform kept here: a walker's own transform reads back as the origin
+    until the server has ticked once after the spawn.)"""
+    import random
+
+    import carla
+
+    rng = random.Random(seed)
+    lib = world.get_blueprint_library().filter("walker.pedestrian.*")
+    cmap = world.get_map()
+    if near is None:
+        near = rng.choice(cmap.get_spawn_points()).location
+    wp = cmap.get_waypoint(near)
+    out: list[tuple[Any, Any, Any]] = []
+    tries = 0
+    while len(out) < n_walkers and tries < n_walkers * 6:
+        tries += 1
+        nxt = wp.next(rng.uniform(*ahead_m))
+        if not nxt:
+            continue
+        lane = nxt[0]
+        right = lane.transform.get_right_vector()
+        side = rng.choice((-1.0, 1.0))
+        # Kerb on one side of the road: walk out from the lane centre until
+        # the nearest sidewalk waypoint is found; fall back to a fixed offset.
+        kerb = None
+        for off in (4.0, 6.0, 8.0, 10.0, 12.0):
+            probe = lane.transform.location + carla.Location(
+                x=right.x * off * side, y=right.y * off * side
+            )
+            swp = cmap.get_waypoint(probe, project_to_road=True, lane_type=carla.LaneType.Sidewalk)
+            if swp is not None and swp.transform.location.distance(probe) < 3.0:
+                kerb = swp.transform.location
+                break
+        if kerb is None:
+            kerb = lane.transform.location + carla.Location(
+                x=right.x * 7.0 * side, y=right.y * 7.0 * side
+            )
+        bp = rng.choice(lib)
+        if bp.has_attribute("is_invincible"):
+            bp.set_attribute("is_invincible", "false")
+        bp.set_attribute("role_name", "walker")
+        yaw = math.degrees(math.atan2(-right.y * side, -right.x * side))
+        tf = carla.Transform(
+            carla.Location(x=kerb.x, y=kerb.y, z=kerb.z + 1.0), carla.Rotation(yaw=yaw)
+        )
+        w = world.try_spawn_actor(bp, tf)
+        if w is None:
+            continue
+        ctrl = carla.WalkerControl(
+            direction=carla.Vector3D(-right.x * side, -right.y * side, 0.0),
+            speed=rng.uniform(1.2, 1.8),
+        )
+        out.append((w, ctrl, tf))
+    log.info("spawned %d walkers", len(out))
+    return out
+
+
+def step_walkers(walkers: list[tuple[Any, Any, Any]], dt: float) -> None:
+    """Advance each walker along its control direction by ``speed * dt``."""
+    import carla
+
+    for w, ctrl, tf in walkers:
+        tf.location += carla.Location(
+            x=ctrl.direction.x * ctrl.speed * dt, y=ctrl.direction.y * ctrl.speed * dt
+        )
+        w.set_transform(tf)
