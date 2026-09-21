@@ -91,6 +91,7 @@ class OmniDreamsBackend(WorldModelBackend):
             ),
             rig_to_camera=[_pose_pb(Pose())],
             random_seed=self.od.random_seed,
+            debug_options=video_model_pb2.DebugOptions(return_hdmap_frames=self.od.return_hdmap),
         )
         self._session_id = self._stub.start_session(req).session_id
         log.info("OmniDreams session %s opened at %dx%d", self._session_id, w, h)
@@ -116,9 +117,13 @@ class OmniDreamsBackend(WorldModelBackend):
         for cam in ret.camera_outputs:
             if cam.camera_logical_id not in (CAMERA_ID, ""):
                 continue
+            hdmaps = [decode_image(h.data) for h in cam.hdmap_condition_frames]
             for i, img in enumerate(cam.rgb_frames):
                 ts = sim_frames[min(i, len(sim_frames) - 1)].timestamp_us
-                out.append(Frame(decode_image(img.data), ts, None, {"generated": True}))
+                meta = {"generated": True}
+                if i < len(hdmaps):
+                    meta["hdmap"] = hdmaps[i]
+                out.append(Frame(decode_image(img.data), ts, None, meta))
         return out
 
     def close(self) -> None:

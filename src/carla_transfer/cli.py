@@ -157,6 +157,9 @@ def _make_sinks(cfg: TransferConfig, args: argparse.Namespace) -> list:
         out.append(S.MjpegSink(host or "0.0.0.0", int(port)))
     if args.record:
         out.append(S.Mp4Sink(Path(args.record), cfg.fps))
+    if getattr(args, "record_overlay", None):
+        cfg.omnidreams.return_hdmap = True
+        out.append(S.OverlaySink(Path(args.record_overlay), cfg.fps))
     return out
 
 
@@ -640,6 +643,11 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--sim-seconds", type=float, default=0.0,
                    help="stop this many sim seconds after the release")  # fmt: skip
     r.add_argument("--record-input", metavar="FILE.mp4", help="also record the CARLA camera")
+    r.add_argument(
+        "--record-overlay",
+        metavar="FILE.mp4",
+        help="record the generated frames with the HD-map condition blended on top",
+    )
     add_sink_args(r)
     r.set_defaults(fn=cmd_run)
 

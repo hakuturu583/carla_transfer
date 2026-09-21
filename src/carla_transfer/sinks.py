@@ -58,6 +58,32 @@ class Mp4Sink:
         log.info("mp4 closed after %d frames", self._frames)
 
 
+class OverlaySink:
+    """mp4 of the generated frame with the HD-map condition (Frame.meta["hdmap"])
+    blended on top — the quickest way to see whether the rollout drifts off
+    the map."""
+
+    def __init__(self, path: str | Path, fps: int, alpha: float = 0.55):
+        self.inner = Mp4Sink(path, fps)
+        self.alpha = alpha
+
+    def __call__(self, frame: Frame) -> None:
+        hd = frame.meta.get("hdmap")
+        rgb = frame.rgb
+        if hd is not None:
+            if hd.shape != rgb.shape:
+                from PIL import Image
+
+                hd = np.asarray(Image.fromarray(hd).resize((frame.width, frame.height)))
+            mask = hd.max(axis=2, keepdims=True) > 40
+            blended = (1 - self.alpha) * rgb.astype(np.float32) + self.alpha * hd.astype(np.float32)
+            rgb = np.where(mask, blended, rgb).astype(np.uint8)
+        self.inner(Frame(rgb, frame.timestamp_us, frame.pose, frame.meta))
+
+    def close(self) -> None:
+        self.inner.close()
+
+
 class MjpegSink:
     """Serves the latest frame as multipart MJPEG on http://host:port/ — the
     quickest way to watch output from another machine (e.g. over Tailscale)."""

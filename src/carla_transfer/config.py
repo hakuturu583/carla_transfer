@@ -99,6 +99,8 @@ class OmniDreamsConfig:
     # "archive" uses the archive's first_image.png, i.e. the Cosmos3-rendered
     # photo written by `carla-transfer prepare-scene`.
     initial_image: str = "archive"
+    # Ask the server for the HD-map condition frames too (Frame.meta["hdmap"]).
+    return_hdmap: bool = False
     # Server-side settings, only used by `carla-transfer up` to build the
     # container command (carla_transfer.server.omnidreams_server). The manifest
     # is an interactive-drive manifest from the fork; the server resolution
