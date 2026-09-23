@@ -36,6 +36,25 @@ def test_pipeline_emits_every_frame_when_model_keeps_up():
     assert got[0].rgb[0, 0, 0] == 40
 
 
+def test_output_pacing_does_not_stall_generation():
+    # 8 frames at 20 fps take 0.4 s to present; generation must not wait for
+    # that, so 4 chunks at 0.1 s each finish in ~0.4 s, not ~2 s.
+    cfg = _cfg(fps=20)
+    backend = MockBackend(cfg, latency_s=0.1)
+    got: list[Frame] = []
+    pipe = StreamPipeline(cfg, backend=backend, sinks=[got.append], drop_stale=False,
+                          max_pending_chunks=100)  # fmt: skip
+    pipe.start(_frame(0))
+    t0 = time.perf_counter()
+    for i in range(8 * 4):
+        pipe.push(_frame(i))
+    while pipe.stats.chunks_generated < 4 and time.perf_counter() - t0 < 5:
+        time.sleep(0.01)
+    assert time.perf_counter() - t0 < 1.0
+    pipe.stop()
+    assert len(got) == 32
+
+
 def test_pipeline_drops_stale_chunks_when_model_is_slow():
     cfg = _cfg()
     got: list[Frame] = []
@@ -95,3 +114,4 @@ def test_first_chunk_is_never_dropped():
     assert seen[0] == 5
     assert all(n == 8 for n in seen[1:])
     assert pipe.stats.chunks_dropped > 0
+

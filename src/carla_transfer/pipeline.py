@@ -2,8 +2,9 @@
 
 Frames are pushed with :meth:`StreamPipeline.push`. They are grouped into
 chunks of ``backend.frames_per_chunk`` and handed to a worker thread that
-calls ``backend.generate``. Generated frames are delivered to sinks at the
-configured fps; if the model falls behind, the newest chunk wins and older
+calls ``backend.generate``. A second thread delivers the generated frames to
+sinks at the configured fps, so pacing the output never stalls generation of
+the next chunk. If the model falls behind, the newest chunk wins and older
 queued chunks are dropped so latency stays bounded (``drop_stale``).
 """
 
@@ -68,6 +69,10 @@ class StreamPipeline:
         self._cv = threading.Condition()
         self._chunk: list[Frame] = []
         self._worker: threading.Thread | None = None
+        self._presenter: threading.Thread | None = None
+        # Generated frames waiting to be presented; None ends the presenter.
+        self._out: collections.deque[Frame | None] = collections.deque()
+        self._out_cv = threading.Condition()
         self._opened = False
         self._lock = threading.Lock()
 
@@ -78,6 +83,10 @@ class StreamPipeline:
         self._opened = True
         self._worker = threading.Thread(target=self._run, name="carla-transfer-gen", daemon=True)
         self._worker.start()
+        self._presenter = threading.Thread(
+            target=self._present, name="carla-transfer-present", daemon=True
+        )
+        self._presenter.start()
 
     def stop(self, flush: bool = True) -> None:
         if not self._opened:
@@ -88,6 +97,9 @@ class StreamPipeline:
         self._enqueue(None)
         if self._worker:
             self._worker.join()
+        self._put_out([None])
+        if self._presenter:
+            self._presenter.join()
         self.backend.close()
         self._opened = False
 
@@ -147,7 +159,6 @@ class StreamPipeline:
     # -- worker --------------------------------------------------------------
 
     def _run(self) -> None:
-        period = 1.0 / self.config.fps if self.config.fps else 0.0
         while True:
             item = self._dequeue()
             if item is None:
@@ -161,13 +172,34 @@ class StreamPipeline:
                 continue
             self.stats.generate_times_s.append(time.perf_counter() - t0)
             self.stats.chunks_generated += 1
-            next_t = time.perf_counter()
-            for f in out:
-                self._emit(f)
-                next_t += period
-                delay = next_t - time.perf_counter()
-                if delay > 0:
-                    time.sleep(delay)
+            self._put_out(out)
+
+    def _put_out(self, frames: Iterable[Frame | None]) -> None:
+        with self._out_cv:
+            self._out.extend(frames)
+            self._out_cv.notify_all()
+
+    def _present(self) -> None:
+        """Emit generated frames at 1/fps. The clock restarts whenever the
+        queue runs dry, so a late chunk is played at the normal cadence
+        instead of in a catch-up burst."""
+        period = 1.0 / self.config.fps if self.config.fps else 0.0
+        next_t = None
+        while True:
+            with self._out_cv:
+                if not self._out:
+                    next_t = None
+                    self._out_cv.wait_for(lambda: len(self._out) > 0)
+                f = self._out.popleft()
+            if f is None:
+                return
+            now = time.perf_counter()
+            if next_t is None:
+                next_t = now
+            elif next_t > now:
+                time.sleep(next_t - now)
+            self._emit(f)
+            next_t += period
 
     def _emit(self, frame: Frame) -> None:
         self.stats.frames_out += 1
