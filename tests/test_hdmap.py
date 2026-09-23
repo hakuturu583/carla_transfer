@@ -124,3 +124,38 @@ def test_lane_line_styles_are_normalized(tiny_xodr, tmp_path):
     assert styles and styles <= {
         "SOLID_SINGLE", "LONG_DASHED_SINGLE", "SOLID_GROUP", "SOLID_DASHED", "DASHED_SOLID",
     }  # fmt: skip
+
+
+def _pt(x, y, z=0.0):
+    return {"x": float(x), "y": float(y), "z": float(z)}
+
+
+JUNCTION = np.array([[0.0, -5.0], [10.0, -5.0], [10.0, 5.0], [0.0, 5.0]])
+
+
+def test_clip_outside_keeps_a_two_vertex_line_leaving_a_junction():
+    from carla_transfer.hdmap.clipgt import clip_outside
+
+    # One vertex in the junction, the next 20 m down the road: dropping the
+    # inside vertex used to leave one point and lose the whole line.
+    (run,) = clip_outside([_pt(5, 0, 0.0), _pt(30, 0, 2.5)], [JUNCTION])
+    assert [(p["x"], p["y"]) for p in run] == [(10.0, 0.0), (30.0, 0.0)]
+    assert run[0]["z"] == pytest.approx(0.5)  # interpolated at the edge
+
+
+def test_clip_outside_splits_a_line_crossing_a_junction():
+    from carla_transfer.hdmap.clipgt import clip_outside
+
+    runs = clip_outside([_pt(-20, 0), _pt(30, 0)], [JUNCTION])
+    assert [[(p["x"], p["y"]) for p in r] for r in runs] == [
+        [(-20.0, 0.0), (0.0, 0.0)],
+        [(10.0, 0.0), (30.0, 0.0)],
+    ]
+
+
+def test_clip_outside_leaves_outside_lines_and_drops_inside_ones():
+    from carla_transfer.hdmap.clipgt import clip_outside
+
+    line = [_pt(-20, 10), _pt(-10, 10), _pt(0, 20)]
+    assert clip_outside(line, [JUNCTION]) == [line]
+    assert clip_outside([_pt(2, 0), _pt(8, 1)], [JUNCTION]) == []

@@ -157,6 +157,57 @@ def _point_in_polygon(poly: np.ndarray, x: float, y: float) -> bool:
     return bool(np.count_nonzero(crosses & (x < xint)) % 2)
 
 
+def _segment_crossings(a: np.ndarray, b: np.ndarray, poly: np.ndarray) -> list[float]:
+    """Parameters t in (0, 1) where segment a→b crosses an edge of ``poly``."""
+    c = poly
+    d = np.roll(poly, -1, axis=0)
+    r = b - a
+    e = d - c
+    denom = r[0] * e[:, 1] - r[1] * e[:, 0]
+    ok = np.abs(denom) > 1e-12
+    ac = c - a
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = (ac[:, 0] * e[:, 1] - ac[:, 1] * e[:, 0]) / denom
+        u = (ac[:, 0] * r[1] - ac[:, 1] * r[0]) / denom
+    hit = ok & (t > 0.0) & (t < 1.0) & (u >= 0.0) & (u <= 1.0)
+    return t[hit].tolist()
+
+
+def clip_outside(points: list[dict], areas: list[np.ndarray]) -> list[list[dict]]:
+    """Split a polyline of ``{x, y, z}`` points into the runs outside every
+    polygon in ``areas``, cut exactly at the polygon edges (z interpolated).
+
+    Dropping the inside *vertices* alone is not enough: straight roads carry
+    few vertices, so a line whose first vertex lies in a junction and whose
+    next one is 20 m further lost that whole segment, and with a two-vertex
+    line nothing was left at all."""
+    runs: list[list[dict]] = [[]]
+
+    def lerp(p: dict, q: dict, t: float) -> dict:
+        return {**p, **{k: p[k] + (q[k] - p[k]) * t for k in ("x", "y", "z")}}
+
+    def inside(x: float, y: float) -> bool:
+        return any(_point_in_polygon(a, x, y) for a in areas)
+
+    for p, q in zip(points[:-1], points[1:], strict=True):
+        a = np.array([p["x"], p["y"]])
+        b = np.array([q["x"], q["y"]])
+        ts = sorted({0.0, 1.0, *(t for poly in areas for t in _segment_crossings(a, b, poly))})
+        for t0, t1 in zip(ts[:-1], ts[1:], strict=True):
+            if t1 - t0 < 1e-9:
+                continue
+            m = a + (b - a) * (t0 + t1) / 2
+            if inside(m[0], m[1]):
+                if runs[-1]:
+                    runs.append([])
+                continue
+            start = lerp(p, q, t0)
+            if not runs[-1]:
+                runs[-1].append(start)
+            runs[-1].append(lerp(p, q, t1))
+    return [r for r in runs if len(r) >= 2]
+
+
 def strip_junction_interiors(clip_dir: Path, clip_id: str) -> dict[str, int]:
     """Cut road boundaries and lane lines out of intersection areas.
 
@@ -164,7 +215,7 @@ def strip_junction_interiors(clip_dir: Path, clip_id: str) -> dict[str, int]:
     and lane lines, so inside an intersection they criss-cross in every
     direction; ClipGT proper leaves the intersection_area polygon and
     nothing else there, and the world model was trained on that. Polylines
-    are split where they enter an area and the inside runs dropped. Returns
+    are cut at the area edges and the inside runs dropped. Returns
     the number of rows removed per layer."""
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -178,9 +229,6 @@ def strip_junction_interiors(clip_dir: Path, clip_id: str) -> dict[str, int]:
     ]
     areas = [a for a in areas if len(a) >= 3]
 
-    def inside(p) -> bool:
-        return any(_point_in_polygon(a, p["x"], p["y"]) for a in areas)
-
     removed: dict[str, int] = {}
     for layer, key in (("road_boundary", "location"), ("lane_line", "line_rail")):
         path = clip_dir / f"{clip_id}.{layer}.parquet"
@@ -190,17 +238,8 @@ def strip_junction_interiors(clip_dir: Path, clip_id: str) -> dict[str, int]:
         out = []
         for r in table.to_pylist():
             rec = r[layer]
-            pts = rec[key]
-            runs: list[list] = [[]]
-            for p in pts:
-                if inside(p):
-                    if runs[-1]:
-                        runs.append([])
-                else:
-                    runs[-1].append(p)
-            for run in runs:
-                if len(run) >= 2:
-                    out.append({layer: {**rec, key: run}})
+            for run in clip_outside(rec[key], areas):
+                out.append({layer: {**rec, key: run}})
         removed[layer] = table.num_rows - len(out)
         pq.write_table(pa.Table.from_pylist(out, schema=table.schema), path)
     return removed
