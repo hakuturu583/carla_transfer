@@ -47,6 +47,9 @@ declare -A SCENARIOS=(
   # The same without traffic: nothing ahead of the hero moves off first, so
   # a colour change in the video can only come from the light / prompt.
   [red_stop_go_solo]="20|--ignore-lights-pct 0 --red-light-for 10 --route Straight --seed 31"
+  # A long red: the hero waits 15 s while the crossing roads (green for them)
+  # stream past in front of it.
+  [red_cross_traffic]="22|--ignore-lights-pct 0 --red-light-for 15 --route Straight --traffic 14 --seed 41"
 )
 # Scenarios on another base archive than BASE_ARCHIVE. town10_tl starts 45 m
 # before junction 23 (Town10's signalized junction on the default route):
@@ -59,6 +62,7 @@ declare -A BASES=(
   [tl_straight]=$TL_BASE
   [red_stop_go]=$TL_BASE
   [red_stop_go_solo]=$TL_BASE
+  [red_cross_traffic]=$TL_BASE
 )
 secs() { echo "${SCENARIOS[$1]%%|*}"; }
 flags() { echo "${SCENARIOS[$1]#*|}"; }
