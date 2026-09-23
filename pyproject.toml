@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "carla-transfer"
-version = "0.1.2"
+version = "0.1.3"
 description = "Real-time sim-to-real video generation for CARLA using OmniDreams / Cosmos3-Nano running in Docker"
 readme = "README.md"
 requires-python = ">=3.10"
