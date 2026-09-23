@@ -1,3 +1,4 @@
+import io
 import json
 import zipfile
 
@@ -159,3 +160,66 @@ def test_clip_outside_leaves_outside_lines_and_drops_inside_ones():
     line = [_pt(-20, 10), _pt(-10, 10), _pt(0, 20)]
     assert clip_outside(line, [JUNCTION]) == [line]
     assert clip_outside([_pt(2, 0), _pt(8, 1)], [JUNCTION]) == []
+
+
+def test_traffic_light_table_from_recorded_heads():
+    from carla_transfer.carla.tracks import traffic_light_table
+
+    doc = {
+        "traffic_lights": [
+            {
+                "actor_id": 22,
+                "opendrive_id": "949",
+                "boxes": [
+                    {"center": [-32.0, 24.5, 5.15], "size_lwh": [0.4, 0.37, 1.19],
+                     "rotation": [0.0, 0.0, 90.0]},
+                ],
+                "states": ["Red"],
+            }
+        ]
+    }  # fmt: skip
+    (row,) = traffic_light_table(doc, "town10").to_pylist()
+    tl = row["traffic_light"]
+    # CARLA (left-handed, y right) -> FLU (y left): y and yaw flip sign.
+    assert (tl["center"]["x"], tl["center"]["y"], tl["center"]["z"]) == (-32.0, -24.5, 5.15)
+    assert (tl["dimensions"]["x"], tl["dimensions"]["y"], tl["dimensions"]["z"]) == (
+        0.4,
+        0.37,
+        1.19,
+    )
+    q = tl["orientation"]
+    assert q["z"] == pytest.approx(-np.sqrt(0.5)) and q["w"] == pytest.approx(np.sqrt(0.5))
+    assert row["key"]["clip_id"] == "town10" and tl["category"] == "traffic_light"
+
+
+@pytest.mark.parametrize("mode", ["carla", "map"])
+def test_add_obstacles_traffic_light_source(tiny_xodr, tmp_path, mode):
+    from carla_transfer.cli import main
+
+    archive = tmp_path / "tiny.usdz"
+    export_scene_archive(tiny_xodr, archive, SceneSpec(clip_id="tiny"))
+    with zipfile.ZipFile(archive) as zf:
+        map_lights = zf.read("clipgt/traffic_light.parquet")
+    head = {"center": [1.0, 2.0, 5.0], "size_lwh": [0.4, 0.4, 1.2], "rotation": [0, 0, 0]}
+    tracks = tmp_path / "tracks.json"
+    tracks.write_text(
+        json.dumps(
+            {
+                "fps": 30,
+                "frames": 1,
+                "tracks": [],
+                "traffic_lights": [
+                    {"actor_id": 1, "opendrive_id": "9", "boxes": [head], "states": ["Red"]}
+                ],
+            }
+        )
+    )
+    assert main(["add-obstacles", str(archive), str(tracks), "--traffic-lights", mode]) == 0
+    with zipfile.ZipFile(archive) as zf:
+        lights = zf.read("clipgt/traffic_light.parquet")
+        assert "clipgt/obstacle.parquet" in zf.namelist()
+    if mode == "map":
+        assert lights == map_lights
+    else:
+        (row,) = pq.read_table(io.BytesIO(lights)).to_pylist()
+        assert row["traffic_light"]["center"] == {"x": 1.0, "y": -2.0, "z": 5.0}

@@ -20,6 +20,9 @@ shift 2
 CT=${CT:-.venv/bin/carla-transfer}
 BASE=${BASE_ARCHIVE:-outputs/scenes/town10.usdz}
 OUT=outputs/scenarios
+# traffic_light layer: "carla" (signal heads recorded from CARLA) or "map"
+# (the OpenDRIVE export's lights), see `carla-transfer add-obstacles -h`.
+TRAFFIC_LIGHTS=${TRAFFIC_LIGHTS:-carla}
 # Extra carla-transfer-cosmos3 args; on a 96 GB card nothing needs offloading.
 COSMOS3_ARGS=${COSMOS3_ARGS:---offload none}
 
@@ -63,7 +66,7 @@ record() {
   $CT -c "$dir/config.yaml" drive --spawn-at-archive-start $(flags "$name") \
     --record-tracks "$dir/tracks.json" --sim-seconds $(($(secs "$name") + 2)) --no-realtime --destroy \
     > "$dir/record.log" 2>&1
-  $CT add-obstacles "$dir/archive.usdz" "$dir/tracks.json"
+  $CT add-obstacles "$dir/archive.usdz" "$dir/tracks.json" --traffic-lights "$TRAFFIC_LIGHTS"
 }
 
 image() {

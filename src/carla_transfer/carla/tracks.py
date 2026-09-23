@@ -57,6 +57,9 @@ class TrackRecorder:
         self.fps = fps
         self.tracks: dict[int, ActorTrack] = {}
         self.frame = 0
+        # actor id -> {"opendrive_id", "boxes", "states"}; see add_traffic_lights
+        self.traffic_lights: dict[int, dict] = {}
+        self._light_actors: list[Any] = []
 
     def _track_for(self, actor: Any) -> ActorTrack:
         t = self.tracks.get(actor.id)
@@ -93,7 +96,41 @@ class TrackRecorder:
                     tr.rotation.yaw,
                 ]
             )
+        for light in self._light_actors:
+            self.traffic_lights[light.id]["states"].append(str(light.get_state()))
         self.frame += 1
+
+    # Light boxes smaller than this (half-height, m) are pedestrian push
+    # buttons on the pole, not signal heads.
+    MIN_HEAD_HALF_HEIGHT = 0.3
+
+    def add_traffic_lights(self) -> int:
+        """Record every traffic light's signal heads (``get_light_boxes()``:
+        the lamp housings on the mast arm and the pole, in world space) and,
+        from then on, its state at every sample. The map's own signals only say
+        where the post stands (CARLA's OpenDRIVE puts the signal at the foot
+        of the pole), so the ClipGT boxes come from here instead."""
+        lights = [a for a in self.world.get_actors() if a.type_id == "traffic.traffic_light"]
+        for light in lights:
+            boxes = [
+                {
+                    "center": [b.location.x, b.location.y, b.location.z],
+                    "size_lwh": [2 * b.extent.x, 2 * b.extent.y, 2 * b.extent.z],
+                    "rotation": [b.rotation.roll, b.rotation.pitch, b.rotation.yaw],
+                }
+                for b in light.get_light_boxes()
+                if b.extent.z >= self.MIN_HEAD_HALF_HEIGHT
+            ]
+            self.traffic_lights[light.id] = {
+                "actor_id": light.id,
+                "opendrive_id": light.get_opendrive_id(),
+                "boxes": boxes,
+                "states": [],
+            }
+        self._light_actors = lights
+        n = sum(len(v["boxes"]) for v in self.traffic_lights.values())
+        log.info("recorded %d traffic lights, %d signal heads", len(lights), n)
+        return len(lights)
 
     # CARLA's parked vehicles are map meshes (environment objects), not actors,
     # so `get_actors()` never sees them; without this the model gets an empty
@@ -169,6 +206,8 @@ class TrackRecorder:
                 for t in self.tracks.values()
             ],
         }
+        if self.traffic_lights:
+            doc["traffic_lights"] = list(self.traffic_lights.values())
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(doc))
@@ -274,6 +313,65 @@ def tracks_to_obstacle_table(doc: dict, clip_id: str, exclude_roles: tuple[str, 
         ]
     )
     return pa.Table.from_pylist(rows, schema=schema)
+
+
+def traffic_light_table(doc: dict, clip_id: str):
+    """Recorded signal heads → the ClipGT traffic_light table (pyarrow), FLU
+    world frame, one cuboid per head (the layout of NVIDIA's own scenes:
+    center, dimensions, orientation, category)."""
+    import pyarrow as pa
+
+    rows = []
+    for light in doc.get("traffic_lights", []):
+        for b in light["boxes"]:
+            x, y, z = b["center"]
+            qx, qy, qz, qw = _yaw_quat_flu(*b["rotation"])
+            rows.append(
+                {
+                    "key": {
+                        "clip_id": clip_id,
+                        "label_class_id": "carla_transfer:traffic_lights:v1",
+                    },
+                    "traffic_light": {
+                        "center": {"x": x, "y": -y, "z": z},
+                        "dimensions": dict(zip("xyz", b["size_lwh"], strict=True)),
+                        "orientation": {"x": qx, "y": qy, "z": qz, "w": qw},
+                        "category": "traffic_light",
+                    },
+                    "version": 0,
+                }
+            )
+    xyz = pa.struct([("x", pa.float64()), ("y", pa.float64()), ("z", pa.float64())])
+    quat = pa.struct([("x", pa.float64()), ("y", pa.float64()), ("z", pa.float64()),
+                      ("w", pa.float64())])  # fmt: skip
+    schema = pa.schema(
+        [
+            ("key", pa.struct([("clip_id", pa.string()), ("label_class_id", pa.string())])),
+            (
+                "traffic_light",
+                pa.struct(
+                    [
+                        ("center", xyz),
+                        ("dimensions", xyz),
+                        ("orientation", quat),
+                        ("category", pa.string()),
+                    ]
+                ),  # fmt: skip
+            ),
+            ("version", pa.uint64()),
+        ]
+    )
+    return pa.Table.from_pylist(rows, schema=schema)
+
+
+def traffic_light_parquet_bytes(doc: dict, clip_id: str) -> bytes:
+    import io
+
+    import pyarrow.parquet as pq
+
+    buf = io.BytesIO()
+    pq.write_table(traffic_light_table(doc, clip_id), buf)
+    return buf.getvalue()
 
 
 def obstacle_parquet_bytes(doc: dict, clip_id: str) -> bytes:

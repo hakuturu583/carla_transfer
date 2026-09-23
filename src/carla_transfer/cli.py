@@ -104,10 +104,18 @@ def cmd_first_image(args: argparse.Namespace) -> int:
 
 
 def cmd_add_obstacles(args: argparse.Namespace) -> int:
-    """Write a `drive --record-tracks` log into the archive as clipgt/obstacle.parquet."""
+    """Write a `drive --record-tracks` log into the archive as
+    clipgt/obstacle.parquet. With ``--traffic-lights carla`` (default) the
+    recorded signal heads replace clipgt/traffic_light.parquet; ``map`` keeps
+    the map's own lights (roadgen: one box at each signal's OpenDRIVE
+    position, which for CARLA's Town maps is the foot of the pole)."""
     import zipfile
 
-    from carla_transfer.carla.tracks import load_tracks, obstacle_parquet_bytes
+    from carla_transfer.carla.tracks import (
+        load_tracks,
+        obstacle_parquet_bytes,
+        traffic_light_parquet_bytes,
+    )
     from carla_transfer.hdmap.prepare import replace_in_archive
 
     archive = Path(args.archive)
@@ -115,9 +123,18 @@ def cmd_add_obstacles(args: argparse.Namespace) -> int:
         import yaml
 
         clip_id = str(yaml.safe_load(zf.read("metadata.yaml"))["scene_id"])
-    data = obstacle_parquet_bytes(load_tracks(args.tracks), clip_id)
+    doc = load_tracks(args.tracks)
+    data = obstacle_parquet_bytes(doc, clip_id)
     replace_in_archive(archive, "clipgt/obstacle.parquet", data)
     print(f"{archive}: clipgt/obstacle.parquet ({len(data)} bytes)")
+    if args.traffic_lights == "carla":
+        if not doc.get("traffic_lights"):
+            raise SystemExit(
+                f"{args.tracks} has no recorded traffic lights; use --traffic-lights map"
+            )
+        data = traffic_light_parquet_bytes(doc, clip_id)
+        replace_in_archive(archive, "clipgt/traffic_light.parquet", data)
+        print(f"{archive}: clipgt/traffic_light.parquet ({len(data)} bytes)")
     return 0
 
 
@@ -534,6 +551,8 @@ def cmd_drive(args: argparse.Namespace) -> int:
     recorder = TrackRecorder(world, cfg.fps) if args.record_tracks else None
     if recorder is not None and not args.no_parked:
         recorder.add_static_vehicles(vehicle.get_location())
+    if recorder is not None:
+        recorder.add_traffic_lights()
 
     def paced_tick():
         t0 = time.monotonic()
@@ -727,6 +746,13 @@ def build_parser() -> argparse.ArgumentParser:
     ao = sub.add_parser("add-obstacles")
     ao.add_argument("archive")
     ao.add_argument("tracks")
+    ao.add_argument(
+        "--traffic-lights",
+        choices=["carla", "map"],
+        default="carla",
+        help="traffic_light layer: the signal heads recorded from CARLA (get_light_boxes) "
+        "or the map's own lights from the OpenDRIVE export",
+    )
     ao.set_defaults(fn=cmd_add_obstacles)
 
     ca = sub.add_parser("carla")
