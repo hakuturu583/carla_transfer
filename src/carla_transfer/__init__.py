@@ -11,4 +11,4 @@ from carla_transfer.frames import Frame
 from carla_transfer.pipeline import StreamPipeline
 
 __all__ = ["BackendKind", "Frame", "StreamPipeline", "TransferConfig"]
-__version__ = "0.1.1"
+__version__ = "0.1.2"
