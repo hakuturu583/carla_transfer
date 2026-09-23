@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import importlib
 import logging
 import os
 import tempfile
@@ -60,13 +61,28 @@ from carla_transfer.server.geometry import (
 log = logging.getLogger("carla_transfer.server")
 
 INITIAL_CHUNK_FRAMES = 5
+STEADY_CHUNK_FRAMES = 8
 # Manifests shipped with carla_transfer (e.g. world_model_blackwell.yaml);
 # a bare name is looked up here before the fork's bundled configs.
 MANIFEST_DIR = Path(__file__).resolve().parent / "manifests"
 
 
+def _drive(name: str):
+    """The interactive-drive module ``name`` (``config``, ``types``, ...):
+    flashdreams main ships it as the ``interactive_drive`` app package, the
+    older fork layout (rtx3090 branch) as ``omnidreams.interactive_drive``."""
+    try:
+        return importlib.import_module(f"interactive_drive.{name}")
+    except ModuleNotFoundError:
+        return importlib.import_module(f"omnidreams.interactive_drive.{name}")
+
+
 @dataclasses.dataclass
 class ServerOptions:
+    # flashdreams main: an ``omnidreams.config.OMNIDREAMS_CONFIGS`` name (e.g.
+    # "omnidreams-optimized-rtx-pro-6000"). When set, ``manifest`` and
+    # ``offload_text_encoder`` (the older fork's manifest path) are unused.
+    pipeline_config: str | None = None
     manifest: str = "example_world_model_rtx3090.yaml"
     offload_text_encoder: bool = True
     resolution_wh: tuple[int, int] | None = None
@@ -102,6 +118,7 @@ class _Session:
         self.raster_only = raster_only
         self.return_hdmap = return_hdmap
         self.chunks_rendered = 0
+        self.prompt = ""
 
 
 class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
@@ -114,56 +131,97 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
         self._raster = None
         self._chunk = None
         self._manifest = None
+        self._resolution: tuple[int, int] | None = None
+        self._prompt_swap_warned = False
 
     # -- model ---------------------------------------------------------------
 
     def load_model(self) -> None:
         """Build the world model and run its warmup (compile / CUDA graphs)."""
-        from omnidreams.interactive_drive.backends.world_model import WorldModelRenderBackend
-
         self._configure()
-        manifest = self._manifest
-        w, h = manifest.resolution_wh
-        log.info(
-            "loading world model manifest=%s res=%dx%d fps=%d chunk=%d offload_text_encoder=%s",
-            self.opts.manifest,
-            w,
-            h,
-            manifest.fps,
-            manifest.num_frames_per_block,
-            self.opts.offload_text_encoder,
-        )
-        self._backend = WorldModelRenderBackend(
-            manifest=manifest,
-            chunk=self._chunk,
-            raster=self._raster,
-            offload_text_encoder=self.opts.offload_text_encoder,
-        )
+        w, h = self._resolution
+        if self.opts.pipeline_config:
+            self._backend = self._main_backend()
+        else:
+            WorldModelRenderBackend = _drive("backends.world_model").WorldModelRenderBackend
+            log.info(
+                "loading world model manifest=%s res=%dx%d fps=%d chunk=%d offload_text_encoder=%s",
+                self.opts.manifest,
+                w,
+                h,
+                self._chunk.fps,
+                self._chunk.chunk_frames,
+                self.opts.offload_text_encoder,
+            )
+            self._backend = WorldModelRenderBackend(
+                manifest=self._manifest,
+                chunk=self._chunk,
+                raster=self._raster,
+                offload_text_encoder=self.opts.offload_text_encoder,
+            )
         self._backend.warmup_model()
         log.info("world model ready")
 
-    def _configure(self) -> None:
-        from omnidreams.interactive_drive.cli import resolve_manifest_path
-        from omnidreams.interactive_drive.config import ChunkConfig, RasterConfig
-        from omnidreams.interactive_drive.world_model.manifest import load_world_model_manifest
+    def _main_backend(self):
+        """flashdreams main: set up the named OmniDreams pipeline config and
+        wrap it in the interactive-drive backend. The latent size follows the
+        initial image, i.e. the raster resolution."""
+        import torch
+        from flashdreams.infra.config import derive_config
+        from omnidreams.config import OMNIDREAMS_CONFIGS
 
-        ours = MANIFEST_DIR / self.opts.manifest
-        path = ours if ours.is_file() else resolve_manifest_path(self.opts.manifest)
-        manifest = load_world_model_manifest(path)
-        if self.opts.resolution_wh is not None:
-            manifest = dataclasses.replace(manifest, resolution_wh=self.opts.resolution_wh)
-        if self.opts.fps is not None:
-            manifest = dataclasses.replace(manifest, fps=self.opts.fps)
-        w, h = manifest.resolution_wh
-        self._manifest = manifest
+        name = self.opts.pipeline_config
+        if name not in OMNIDREAMS_CONFIGS:
+            raise SystemExit(
+                f"unknown pipeline config {name!r}; one of {sorted(OMNIDREAMS_CONFIGS)}"
+            )
+        log.info(
+            "loading world model pipeline=%s res=%dx%d fps=%d chunk=%d",
+            name,
+            *self._resolution,
+            self._chunk.fps,
+            self._chunk.chunk_frames,
+        )
+        config = derive_config(OMNIDREAMS_CONFIGS[name], diffusion_model=dict(seed=42))
+        device = torch.device("cuda:0")
+        with torch.cuda.device(device):
+            pipeline = config.setup().to(device).eval()
+        return _drive("backends.world_model").WorldModelRenderBackend(
+            pipeline=pipeline, chunk=self._chunk, raster=self._raster
+        )
+
+    def _configure(self) -> None:
+        drive_config = _drive("config")
+        if self.opts.pipeline_config:
+            w, h = self.opts.resolution_wh or (1280, 704)
+            fps = self.opts.fps or 30
+            chunk_frames = STEADY_CHUNK_FRAMES
+        else:
+            from omnidreams.interactive_drive.cli import resolve_manifest_path
+            from omnidreams.interactive_drive.world_model.manifest import load_world_model_manifest
+
+            ours = MANIFEST_DIR / self.opts.manifest
+            path = ours if ours.is_file() else resolve_manifest_path(self.opts.manifest)
+            manifest = load_world_model_manifest(path)
+            if self.opts.resolution_wh is not None:
+                manifest = dataclasses.replace(manifest, resolution_wh=self.opts.resolution_wh)
+            if self.opts.fps is not None:
+                manifest = dataclasses.replace(manifest, fps=self.opts.fps)
+            self._manifest = manifest
+            (w, h), fps, chunk_frames = (
+                manifest.resolution_wh,
+                manifest.fps,
+                manifest.num_frames_per_block,
+            )
+        self._resolution = (w, h)
         # RasterConfig's line widths are pixels tuned for the 1280x704 training
         # raster; rendering straight at a smaller resolution would draw lines
         # 2-3x thicker (relative to the frame) than the model ever saw.
-        ref = RasterConfig()
+        ref = drive_config.RasterConfig()
         scale = self.opts.line_width_scale
         if scale is None:
             scale = min(w / ref.width, h / ref.height)
-        self._raster = RasterConfig(
+        self._raster = drive_config.RasterConfig(
             width=w,
             height=h,
             line_width_px=max(1.0, ref.line_width_px * scale),
@@ -172,10 +230,10 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
         log.info(
             "raster %dx%d line width %.1f px (scale %.2f)", w, h, self._raster.line_width_px, scale
         )
-        self._chunk = ChunkConfig(
-            fps=manifest.fps,
+        self._chunk = drive_config.ChunkConfig(
+            fps=fps,
             initial_chunk_frames=INITIAL_CHUNK_FRAMES,
-            chunk_frames=manifest.num_frames_per_block,
+            chunk_frames=chunk_frames,
         )
 
     def install_embedding_cache(self, cache_dir: Path) -> None:
@@ -218,16 +276,27 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
 
     def load_rasterizer(self) -> None:
         """HD-map rasterizer only (no world model): serves raster-only sessions."""
-        from omnidreams.interactive_drive.rasterizer import LudusConditionRasterizer
-
         if self._raster is None:
             self._configure()
-        self._rasterizer = LudusConditionRasterizer(self._raster)
-        log.info("rasterizer ready (%dx%d)", *self._manifest.resolution_wh)
+        self._rasterizer = _drive("rasterizer").LudusConditionRasterizer(self._raster)
+        log.info("rasterizer ready (%dx%d)", *self._resolution)
 
     @property
     def resolution_wh(self) -> tuple[int, int]:
-        return self._manifest.resolution_wh
+        return self._resolution
+
+    def _replace_prompt(self, prompt: str) -> None:
+        """Condition the running rollout on ``prompt`` from the next chunk on
+        (flashdreams main's ``WorldModelRenderBackend.replace_prompt``)."""
+        replace_prompt = getattr(self._backend, "replace_prompt", None)
+        if not callable(replace_prompt):
+            if not self._prompt_swap_warned:
+                log.warning(
+                    "this flashdreams cannot replace a live prompt; per-chunk prompts are ignored"
+                )
+                self._prompt_swap_warned = True
+            return
+        replace_prompt(prompt)
 
     # -- rpc -----------------------------------------------------------------
 
@@ -235,7 +304,7 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
         return common_pb2.VersionId()
 
     def start_session(self, request, context):
-        from omnidreams.interactive_drive.scene_loader import load_scene_bundle
+        load_scene_bundle = _drive("scene_loader").load_scene_bundle
 
         with self._lock:
             if self._session is not None:
@@ -281,10 +350,12 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
                     )
                 self._backend.load_scene(scene)
             self._session = _Session(session_id, scene_path, owns_file, raster_only, return_hdmap)
+            self._session.prompt = scene.prompt
             return video_model_pb2.SessionId(session_id=session_id)
 
     def render_video_chunk(self, request, context):
-        from omnidreams.interactive_drive.types import TrajectoryChunk, VehicleState
+        drive_types = _drive("types")
+        TrajectoryChunk, VehicleState = drive_types.TrajectoryChunk, drive_types.VehicleState
 
         with self._lock:
             s = self._session
@@ -323,6 +394,12 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
                 ),
             )
             hdmap_frames: list = []
+            prompt = request.text_prompt.positive if request.HasField("text_prompt") else ""
+            if prompt and prompt != s.prompt and not s.raster_only:
+                log.info("session %s chunk %d: prompt -> %r", s.session_id,
+                         s.chunks_rendered, prompt[-120:])  # fmt: skip
+                self._replace_prompt(prompt)
+                s.prompt = prompt
             if s.raster_only:
                 raster = self._rasterizer.render_chunk(poses, ts)
                 rgb_frames: list = []
@@ -423,6 +500,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="manifest name (carla_transfer's server/manifests, then the fork's "
         "interactive-drive configs) or a path",
     )
+    p.add_argument(
+        "--pipeline-config",
+        help="flashdreams main: omnidreams.config.OMNIDREAMS_CONFIGS name "
+        "(e.g. omnidreams-optimized-rtx-pro-6000); replaces --manifest",
+    )
     p.add_argument("--offload-text-encoder", dest="offload", action="store_true", default=True)
     p.add_argument("--no-offload-text-encoder", dest="offload", action="store_false")
     p.add_argument("--resolution", metavar="WxH", help="override the manifest resolution_wh")
@@ -468,6 +550,7 @@ def main(argv: list[str] | None = None) -> int:
         w, h = args.resolution.lower().split("x")
         res = (int(w), int(h))
     opts = ServerOptions(
+        pipeline_config=args.pipeline_config,
         manifest=args.manifest,
         offload_text_encoder=args.offload,
         resolution_wh=res,
@@ -483,7 +566,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.raster_only:
         svc.load_rasterizer()
     else:
-        if args.embedding_cache and str(args.embedding_cache):
+        # The embedding cache wraps the older fork's offloaded encoder path.
+        if args.embedding_cache and str(args.embedding_cache) and not args.pipeline_config:
             svc.install_embedding_cache(args.embedding_cache)
         svc.load_model()
 

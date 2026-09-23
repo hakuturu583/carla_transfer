@@ -44,15 +44,16 @@ def stop_container(name: str) -> None:
     docker("rm", "-f", name, capture=True, check=False)
 
 
-def build_image(target: str, tag: str) -> None:
+def build_image(target: str, tag: str, build_args: dict[str, str] | None = None) -> None:
     """Build docker/Dockerfile.<target> with the repo root as context (the
     images install this package so the containers can run its servers)."""
     dockerfile = DOCKER_DIR / f"Dockerfile.{target}"
     if not dockerfile.exists():
         raise FileNotFoundError(dockerfile)
-    subprocess.run(
-        ["docker", "build", "-f", str(dockerfile), "-t", tag, str(REPO_ROOT)], check=True
-    )
+    args = ["docker", "build", "-f", str(dockerfile), "-t", tag]
+    for key, value in (build_args or {}).items():
+        args += ["--build-arg", f"{key}={value}"]
+    subprocess.run([*args, str(REPO_ROOT)], check=True)
 
 
 class ContainerManager:
@@ -149,13 +150,16 @@ class ContainerManager:
             "carla-transfer-server",
             "--host", "0.0.0.0",
             "--port", str(c.omnidreams.port),
-            "--manifest", c.omnidreams.manifest,
             "--resolution", f"{c.width}x{c.height}",
             "--fps", str(c.fps),
             "--camera", c.omnidreams.camera_name,
         ]  # fmt: skip
-        if not c.omnidreams.offload_text_encoder:
-            cmd.append("--no-offload-text-encoder")
+        if c.omnidreams.pipeline_config:
+            cmd += ["--pipeline-config", c.omnidreams.pipeline_config]
+        else:
+            cmd += ["--manifest", c.omnidreams.manifest]
+            if not c.omnidreams.offload_text_encoder:
+                cmd.append("--no-offload-text-encoder")
         if raster_only:
             cmd.append("--raster-only")
         return cmd
@@ -194,7 +198,10 @@ class ContainerManager:
 
     def build(self, target: str | None = None, tag: str | None = None) -> None:
         target = target or self.config.backend.value
-        build_image(target, tag or (COSMOS3_IMAGE if target == "cosmos3" else self.d.image))
+        if target == "cosmos3":
+            build_image(target, tag or COSMOS3_IMAGE)
+        else:
+            build_image(target, tag or self.d.image, self.d.build_args)
 
 
 def _port_of(url: str) -> int:

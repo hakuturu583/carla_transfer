@@ -137,22 +137,64 @@ the prompt; the first `render_video_chunk` must carry 5 poses, later ones 8.
 
 ## RTX PRO 6000 Blackwell (96 GB)
 
-`configs/omnidreams_blackwell.yaml` uses `server/manifests/world_model_blackwell.yaml`:
-the OmniDreams single-view native path (FP8 KV cache + cuDNN attention, SM 12.0
-only), the text encoder kept resident, CARLA 0.10 at Low with UE's off-screen
-60 fps cap lifted (`carla.launcher_args`). Measured with CARLA on the same card
-(`drive --realtime` + `run --follow`, Town10):
+`configs/omnidreams_blackwell.yaml` runs flashdreams **main** (the
+`integrations_v2/` + `apps/interactive_drive` layout) from the fork branch
+`claude/omnidreams-native-text-replace`, image `carla-transfer/omnidreams:main`
+(`carla-transfer -c configs/omnidreams_blackwell.yaml build` passes the ref as
+`docker.build_args`), with the pipeline config
+`omnidreams-optimized-rtx-pro-6000` (`omnidreams.pipeline_config`). The server
+detects the layout; the older fork branch keeps working through
+`omnidreams.manifest`. CARLA 0.10 runs at Low with UE's off-screen 60 fps cap
+lifted (`carla.launcher_args`). At 640x352 a chunk of 8 frames takes 213-226 ms
+(~36 fps); end to end the f-theta camera render caps CARLA at ~24 Hz.
+
+Older fork layout, native FP8 DiT (`server/manifests/world_model_blackwell.yaml`),
+measured with CARLA on the same card:
 
 | resolution | model ms / 8-frame chunk | end-to-end fps |
 |---|---|---|
-| **640x352** (default) | 126 | 29.8 |
+| **640x352** | 126 | 29.8 |
 | 896x496 | 274 | 22.9 |
 | 1024x560 | 356 | 19.4 |
 | 1280x704 | 705 | 10.0 |
 
-The first start JIT-builds the native extension into
-`~/.cache/carla_transfer/omnidreams_native`; `MAX_JOBS=4` keeps nvcc from
-running out of host RAM on a 31 GB machine.
+The native extension JIT-builds into `~/.cache/carla_transfer/omnidreams_native`;
+`MAX_JOBS=4` keeps nvcc from running out of host RAM on a 31 GB machine.
+
+### Traffic light colour in the prompt
+
+HD-map conditioning has no light state (ClipGT lights are grey boxes, and the
+model was trained on those), so the colour goes into the prompt:
+`omnidreams.sync_traffic_lights` makes `run` look up the light governing the
+lane ahead of the ego for every frame (from the pose the frame was captured
+at), and the client appends "The traffic light ahead is red/yellow/green." to
+the base prompt, sending it with a chunk (`VideoChunkRequest.text_prompt`, a
+carla_transfer extension of the proto) only when it changes. The server swaps
+the live rollout's text conditioning (`WorldModelRenderBackend.replace_prompt`
+on flashdreams main). Prompts change at chunk boundaries (8 frames, 0.27 s);
+the model itself follows a switch within ~1.4 s (Town10, red to green, ego
+alone, same trajectory with and without the prompt). Without the prompt it
+drew green lights while CARLA's was red.
+
+`drive --red-light-for S` holds the light ahead of the hero red for S sim
+seconds, then green (all lights frozen); recorded light states are replayed.
+Scenarios: `red_stop_go`, `red_stop_go_solo` (no traffic), `tl_left`,
+`tl_straight`.
+
+### Camera model and timing
+
+- The archives' camera is f-theta (`r = 305.6 px * theta` at 640 wide).
+  `run` renders a wider pinhole in CARLA and remaps it to that model
+  (`FThetaRemap`; `--pinhole-camera` for CARLA's own), otherwise everything
+  ahead looked 1.65x smaller than in the condition.
+- `run --follow --go-file`: frame timestamps are world-frame ticks since the
+  driver's first moving tick (the driver writes `<go>.released`), the ego pose
+  of a frame is the vehicle in that tick's world snapshot, and the replay
+  applies poses with `apply_batch_sync`. Two runs of one log send the model
+  identical timestamps and poses; `--dump-trajectory` writes them out.
+- `carla-transfer carla cleanup` removes whatever a failed drive/run left in
+  CARLA; `scenarios.sh` runs it around every stage, and drive/run leave through
+  their teardown on SIGTERM.
 
 ## CARLA map → scene archive
 

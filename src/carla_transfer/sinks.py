@@ -93,20 +93,21 @@ class CompareSink:
 
     def __init__(self, path: str | Path, fps: int):
         self.inner = Mp4Sink(path, fps)
-        self._inputs: dict[int, np.ndarray] = {}
+        self._inputs: dict[int, Frame] = {}
         self._lock = threading.Lock()
 
     def add_input(self, frame: Frame) -> None:
         with self._lock:
             # Standstill frames all have timestamp 0; the latest one wins.
-            self._inputs[frame.timestamp_us] = frame.rgb
+            self._inputs[frame.timestamp_us] = frame
 
     def __call__(self, frame: Frame) -> None:
         from PIL import Image, ImageDraw
 
         h, w = frame.rgb.shape[:2]
         with self._lock:
-            carla_rgb = self._inputs.get(frame.timestamp_us)
+            source = self._inputs.get(frame.timestamp_us)
+            carla_rgb = None if source is None else source.rgb
             # Inputs older than this frame are never shown again.
             for ts in [t for t in self._inputs if 0 < t < frame.timestamp_us]:
                 del self._inputs[ts]
@@ -123,6 +124,12 @@ class CompareSink:
         for i, label in enumerate(self.LABELS):
             draw.text((i * w + 8, 6), label, fill=(255, 255, 0))
         draw.text((8, h - 18), f"t={frame.timestamp_us / 1e6:.2f}s", fill=(255, 255, 0))
+        light = None if source is None else source.meta.get("traffic_light")
+        if light:
+            colour = {"Red": (255, 60, 60), "Yellow": (255, 220, 0), "Green": (60, 255, 60)}
+            draw.text(
+                (90, h - 18), f"light ahead: {light}", fill=colour.get(light, (255, 255, 255))
+            )
         self.inner(Frame(np.asarray(canvas), frame.timestamp_us, frame.pose, frame.meta))
 
     def close(self) -> None:

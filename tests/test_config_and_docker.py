@@ -118,3 +118,25 @@ def test_carla_server_args(fake_docker):
     assert "CarlaUnreal.sh" in args and "--net=host" in args
     cfg.carla.image = "carlasim/carla:0.9.16"
     assert "CarlaUE4.sh" in CarlaServerManager(cfg.carla).run_args()
+
+
+def test_pipeline_config_replaces_manifest_and_build_args(fake_docker, monkeypatch):
+    from carla_transfer.docker import manager
+
+    cfg = TransferConfig.from_yaml(CONFIGS / "omnidreams_blackwell.yaml")
+    cfg.docker.hf_cache = fake_docker / "hf"
+    cfg.docker.inductor_cache = fake_docker / "inductor"
+    cmd = ContainerManager(cfg).omnidreams_server_command()
+    assert cmd[cmd.index("--pipeline-config") + 1] == "omnidreams-optimized-rtx-pro-6000"
+    assert "--manifest" not in cmd and "--no-offload-text-encoder" not in cmd
+    assert cfg.omnidreams.sync_traffic_lights
+
+    seen = []
+    monkeypatch.setattr(manager.subprocess, "run", lambda args, check: seen.append(args))
+    ContainerManager(cfg).build()
+    (args,) = seen
+    assert "--build-arg" in args
+    assert args[args.index("--build-arg") + 1] == (
+        "FLASHDREAMS_REF=claude/omnidreams-native-text-replace"
+    )
+    assert args[args.index("-t") + 1] == "carla-transfer/omnidreams:main"

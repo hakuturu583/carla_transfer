@@ -52,6 +52,9 @@ class DockerConfig:
     shm_size: str = "16g"
     env: dict[str, str] = field(default_factory=dict)
     extra_args: list[str] = field(default_factory=list)
+    # `docker build --build-arg` values for `carla-transfer build`, e.g.
+    # {"FLASHDREAMS_REF": "claude/omnidreams-native-text-replace"}.
+    build_args: dict[str, str] = field(default_factory=dict)
     # Seconds to wait for the server to accept connections after `docker run`.
     startup_timeout_s: float = 1800.0
 
@@ -123,6 +126,25 @@ class OmniDreamsConfig:
     # overrides its resolution_wh and defaults to the client width/height.
     manifest: str = "example_world_model_rtx3090.yaml"
     offload_text_encoder: bool = True
+    # flashdreams main (integrations_v2 layout): an
+    # omnidreams.config.OMNIDREAMS_CONFIGS name, e.g.
+    # "omnidreams-optimized-rtx-pro-6000". Replaces manifest/offload, and is
+    # what lets a chunk change the prompt (text_prompt per chunk).
+    pipeline_config: str | None = None
+    # Say the colour of the traffic light ahead of the ego in the prompt, per
+    # chunk: `run` puts the light's state in Frame.meta["traffic_light"] and
+    # the base prompt (positive_prompt, else the archive's own) gets the
+    # matching sentence appended. Needs a server that can change a live
+    # prompt (pipeline_config).
+    sync_traffic_lights: bool = False
+    traffic_light_range_m: float = 60.0
+    traffic_light_prompts: dict[str, str] = field(
+        default_factory=lambda: {
+            "Red": "The traffic light ahead is red.",
+            "Yellow": "The traffic light ahead is yellow.",
+            "Green": "The traffic light ahead is green.",
+        }
+    )
 
 
 @dataclass
@@ -185,6 +207,7 @@ class TransferConfig:
         )
         # An `env:` block that only holds comments parses as None.
         docker_raw["env"] = docker_raw.get("env") or {}
+        docker_raw["build_args"] = docker_raw.get("build_args") or {}
         docker = DockerConfig(**docker_raw)
         omni = OmniDreamsConfig(**_paths(raw.pop("omnidreams", None) or {}, "scene_archive"))
         cosmos = Cosmos3Config(**(raw.pop("cosmos3", None) or {}))

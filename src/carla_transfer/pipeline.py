@@ -117,6 +117,20 @@ class StreamPipeline:
             self.drop_stale = drop_stale
             self._cv.notify_all()
 
+    def discard_pending(self) -> int:
+        """Drop the chunks waiting for the worker and the partial chunk being
+        filled (not the one generating now). Returns the number of queued
+        chunks dropped."""
+        with self._cv:
+            dropped = sum(1 for item in self._pending if item is not None)
+            kept = [item for item in self._pending if item is None]
+            self._pending.clear()
+            self._pending.extend(kept)
+            self.stats.chunks_dropped += dropped
+            self._cv.notify_all()
+        self._chunk = []
+        return dropped
+
     # -- input ---------------------------------------------------------------
 
     def push(self, frame: Frame) -> None:

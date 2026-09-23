@@ -149,18 +149,21 @@ class SessionCloseRequest(_message.Message):
     def __init__(self, session_id: _Optional[str] = ...) -> None: ...
 
 class VideoChunkRequest(_message.Message):
-    __slots__ = ("session_id", "rig_trajectory", "dynamic_state")
+    __slots__ = ("session_id", "rig_trajectory", "dynamic_state", "text_prompt")
     SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     RIG_TRAJECTORY_FIELD_NUMBER: _ClassVar[int]
     DYNAMIC_STATE_FIELD_NUMBER: _ClassVar[int]
+    TEXT_PROMPT_FIELD_NUMBER: _ClassVar[int]
     session_id: SessionId
     rig_trajectory: _common_pb2.Trajectory
     dynamic_state: DynamicWorldState
+    text_prompt: TextPrompt
     def __init__(
         self,
         session_id: _Optional[_Union[SessionId, _Mapping]] = ...,
         rig_trajectory: _Optional[_Union[_common_pb2.Trajectory, _Mapping]] = ...,
         dynamic_state: _Optional[_Union[DynamicWorldState, _Mapping]] = ...,
+        text_prompt: _Optional[_Union[TextPrompt, _Mapping]] = ...,
     ) -> None: ...
 
 class CameraOutput(_message.Message):

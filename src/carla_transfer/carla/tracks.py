@@ -384,16 +384,111 @@ def obstacle_parquet_bytes(doc: dict, clip_id: str) -> bytes:
     return buf.getvalue()
 
 
+def cleanup_world(host: str = "127.0.0.1", port: int = 2000) -> int:
+    """Leave the world as a fresh CARLA start would: asynchronous (a
+    synchronous world nobody ticks also hides every actor from get_actors()),
+    no vehicles, walkers, sensors or AI controllers, traffic lights running.
+    Returns the number of actors removed."""
+    import carla
+
+    client = carla.Client(host, port)
+    client.set_timeout(30.0)
+    world = client.get_world()
+    settings = world.get_settings()
+    settings.synchronous_mode = False
+    settings.fixed_delta_seconds = None
+    world.apply_settings(settings)
+    world.wait_for_tick(10.0)
+    leftovers = [
+        a
+        for a in world.get_actors()
+        if a.type_id.startswith(("vehicle.", "walker.", "sensor.", "controller."))
+    ]
+    for a in leftovers:
+        if a.type_id.startswith("sensor."):
+            a.stop()
+    client.apply_batch_sync([carla.command.DestroyActor(a.id) for a in leftovers])
+    world.freeze_all_traffic_lights(False)
+    world.reset_all_traffic_lights()
+    log.info("removed %d leftover actors", len(leftovers))
+    return len(leftovers)
+
+
+# -- traffic lights ----------------------------------------------------------
+
+
+def traffic_light_ahead(
+    world, vehicle, max_m: float = 60.0, transform=None
+) -> tuple[Any, float] | None:
+    """The traffic light governing the lane ahead of ``vehicle`` and the
+    distance to its stop line, or None when there is none within ``max_m``.
+
+    Inside a light's trigger volume CARLA names it (``get_traffic_light``);
+    otherwise the lights along the lane ahead are searched and the one whose
+    stop line comes first is taken. ``transform`` evaluates it for another
+    vehicle transform than the current one (the tick a frame was captured
+    on). A stop line already behind the vehicle does not count, so a light
+    stops mattering once the ego is through it."""
+    tf = transform or vehicle.get_transform()
+    loc = tf.location
+    fwd = tf.get_forward_vector()
+
+    def stop_distance(light) -> float | None:
+        best = None
+        for wp in light.get_stop_waypoints():
+            d = wp.transform.location - loc
+            if d.x * fwd.x + d.y * fwd.y < -1.0:  # behind: already crossed
+                continue
+            dist = math.hypot(d.x, d.y)
+            best = dist if best is None else min(best, dist)
+        return best
+
+    # CARLA's trigger-volume answer reflects the vehicle now; for a given
+    # (past) transform rely on the lane search alone.
+    current = vehicle.get_traffic_light() if transform is None else None
+    if current is not None:
+        return current, stop_distance(current) or 0.0
+    wp = world.get_map().get_waypoint(loc)
+    found = []
+    for light in world.get_traffic_lights_from_waypoint(wp, max_m):
+        dist = stop_distance(light)
+        if dist is not None and dist <= max_m:
+            found.append((dist, light.id, light))
+    if not found:
+        return None
+    dist, _, light = min(found, key=lambda f: (f[0], f[1]))
+    return light, dist
+
+
+def set_light_group(light, state_name: str) -> None:
+    """Put ``light`` in ``state_name`` ("Red", "Green", ...) and the rest of
+    its junction group in the complement (green while it is red, red
+    otherwise), so the crossing traffic sees a consistent junction."""
+    import carla
+
+    state = getattr(carla.TrafficLightState, state_name)
+    others = carla.TrafficLightState.Green if state_name == "Red" else carla.TrafficLightState.Red
+    for other in light.get_group_traffic_lights():
+        if other.id != light.id:
+            other.set_state(others)
+    light.set_state(state)
+
+
 # -- replay ------------------------------------------------------------------
 
 
 class TrackReplayer:
     """Spawn the recorded actors (physics off) and drive them by transform."""
 
-    def __init__(self, world: Any, doc: dict):
+    def __init__(self, world: Any, doc: dict, client: Any | None = None):
         import carla
 
         self.world = world
+        # With a client, poses go through apply_batch_sync, which returns once
+        # the server applied them: actor.set_transform is fire-and-forget and
+        # every now and then missed the next tick (the actor then lagged a
+        # sample behind its log for a tick or two).
+        self.client = client
         self.doc = doc
         self.actors: list[tuple[Any, list[list[float]]]] = []
         lib = world.get_blueprint_library()
@@ -405,8 +500,11 @@ class TrackReplayer:
             if t["role_name"]:
                 bp.set_attribute("role_name", t["role_name"])
             s0 = t["samples"][0]
+            # Lifted to spawn clear of the ground and anything touching it:
+            # since spawns settle before recording, the logged z is on the
+            # road. apply() puts the actor at its logged pose right after.
             tf = carla.Transform(
-                carla.Location(x=s0[1], y=s0[2], z=s0[3] + 0.05),
+                carla.Location(x=s0[1], y=s0[2], z=s0[3] + 0.5),
                 carla.Rotation(roll=s0[4], pitch=s0[5], yaw=s0[6]),
             )
             actor = world.try_spawn_actor(bp, tf)
@@ -416,6 +514,23 @@ class TrackReplayer:
             actor.set_simulate_physics(False)
             self.actors.append((actor, t["samples"]))
         log.info("replaying %d actors", len(self.actors))
+        # Recorded light states are replayed too (lights frozen), so CARLA's
+        # lights in this pass match the recording the archive was built from.
+        self.lights: list[tuple[Any, list[str]]] = []
+        for rec in doc.get("traffic_lights", []):
+            if not rec.get("states"):
+                continue
+            light = world.get_traffic_light_from_opendrive_id(str(rec["opendrive_id"]))
+            if light is None:
+                light = world.get_actor(int(rec["actor_id"]))
+            if light is None:
+                log.warning("no traffic light %s to replay", rec["opendrive_id"])
+                continue
+            self.lights.append((light, rec["states"]))
+        self._light_state: dict[int, str] = {}
+        if self.lights:
+            world.freeze_all_traffic_lights(True)
+            log.info("replaying %d traffic lights", len(self.lights))
 
     @property
     def frames(self) -> int:
@@ -424,14 +539,32 @@ class TrackReplayer:
     def apply(self, frame: int) -> None:
         import carla
 
+        for light, states in self.lights:
+            state = states[min(frame, len(states) - 1)]
+            if self._light_state.get(light.id) != state:
+                light.set_state(getattr(carla.TrafficLightState, state))
+                self._light_state[light.id] = state
+        transforms = []
         for actor, samples in self.actors:
             s = samples[min(frame, len(samples) - 1)]
-            actor.set_transform(
-                carla.Transform(
-                    carla.Location(x=s[1], y=s[2], z=s[3]),
-                    carla.Rotation(roll=s[4], pitch=s[5], yaw=s[6]),
+            transforms.append(
+                (
+                    actor,
+                    carla.Transform(
+                        carla.Location(x=s[1], y=s[2], z=s[3]),
+                        carla.Rotation(roll=s[4], pitch=s[5], yaw=s[6]),
+                    ),
                 )
             )
+        if self.client is not None:
+            for response in self.client.apply_batch_sync(
+                [carla.command.ApplyTransform(actor.id, tf) for actor, tf in transforms]
+            ):
+                if response.error:
+                    log.warning("replay transform failed: %s", response.error)
+        else:
+            for actor, tf in transforms:
+                actor.set_transform(tf)
 
     def hero(self, role_name: str = "hero"):
         for actor, _ in self.actors:
@@ -442,6 +575,8 @@ class TrackReplayer:
     def destroy(self) -> None:
         for actor, _ in self.actors:
             actor.destroy()
+        if self.lights:
+            self.world.freeze_all_traffic_lights(False)
 
 
 def spawn_traffic(

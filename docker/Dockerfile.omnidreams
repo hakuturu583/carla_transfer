@@ -15,6 +15,10 @@ ARG BASE_IMAGE=nvidia/cuda:13.2.1-cudnn-devel-ubuntu24.04
 FROM ${BASE_IMAGE}
 
 ARG FLASHDREAMS_REPO=https://github.com/hakuturu583/flashdreams.git
+# claude/omnidreams-rtx3090-ahncny: the older layout with the RTX 3090
+# manifest. A branch off flashdreams main (integrations_v2/, apps/) runs with
+# omnidreams.pipeline_config instead and can change the prompt per chunk,
+# e.g. --build-arg FLASHDREAMS_REF=claude/omnidreams-native-text-replace.
 ARG FLASHDREAMS_REF=claude/omnidreams-rtx3090-ahncny
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -43,7 +47,10 @@ RUN git clone --depth 1 --branch "${FLASHDREAMS_REF}" "${FLASHDREAMS_REPO}" . \
 # use into OMNIDREAMS_SINGLEVIEW_NATIVE_BUILD_ROOT. Unused on Ampere.
 ARG SYNC_NATIVE_THIRDPARTY=1
 RUN if [ "${SYNC_NATIVE_THIRDPARTY}" = "1" ]; then \
-        .venv/bin/python integrations/omnidreams/omnidreams_singleview/tools/sync_thirdparty.py sync; \
+        for tool in integrations_v2/omnidreams/impl/omnidreams_singleview/tools/sync_thirdparty.py \
+                    integrations/omnidreams/omnidreams_singleview/tools/sync_thirdparty.py; do \
+            if [ -f "$tool" ]; then .venv/bin/python "$tool" sync; break; fi; \
+        done; \
     fi
 
 # This package (client + in-container server) into the same venv.

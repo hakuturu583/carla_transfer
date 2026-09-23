@@ -18,7 +18,12 @@ width: 640
 height: 352
 fps: 30
 docker:
-  image: carla-transfer/omnidreams:latest
+  # flashdreams main (integrations_v2 layout) with native text replacement
+  # and WorldModelRenderBackend.replace_prompt, from the fork:
+  #   carla-transfer -c configs/omnidreams_blackwell.yaml build
+  image: carla-transfer/omnidreams:main
+  build_args:
+    FLASHDREAMS_REF: claude/omnidreams-native-text-replace
   container_name: carla-transfer-omnidreams
   startup_timeout_s: 1800
   env:
@@ -44,8 +49,12 @@ omnidreams:
   port: 50051
   frames_per_chunk: 8
   first_chunk_frames: 5
-  manifest: world_model_blackwell.yaml
-  offload_text_encoder: false
+  # flashdreams main's RTX PRO 6000 config (optimized attention with FP8
+  # projections on the PyTorch forward). The older fork layout ran the
+  # native FP8 DiT through manifest: world_model_blackwell.yaml.
+  pipeline_config: omnidreams-optimized-rtx-pro-6000
+  # The colour of the light ahead goes into the prompt, per chunk.
+  sync_traffic_lights: true
   camera_name: camera_front_wide_120fov
   scene_archive: outputs/scenes/town10.usdz
   positive_prompt: >-

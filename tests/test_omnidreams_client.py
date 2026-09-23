@@ -137,3 +137,35 @@ def test_pipeline_sends_5_then_8_poses(server, tmp_path):
             pipe.push(Frame(np.zeros((32, 64, 3), np.uint8), i * 1000))
     assert [len(r.rig_trajectory.poses) for r in svc.chunk_reqs] == [5, 8, 8]
     assert len(got) == 21
+
+
+def test_traffic_light_prompt_is_sent_only_when_it_changes(server, tmp_path):
+    svc, port = server
+    cfg = _cfg(port, tmp_path)
+    cfg.omnidreams.sync_traffic_lights = True
+    f = lambda i, light: Frame(  # noqa: E731
+        np.zeros((32, 64, 3), np.uint8), i * 33_333, Pose(), {"traffic_light": light}
+    )
+    with OmniDreamsBackend(cfg) as be:
+        be.open(f(0, None))
+        assert svc.session_req.text_prompt.positive == "sunny"
+        be.generate([f(i, "Red") for i in range(5)])
+        be.generate([f(i, "Red") for i in range(5, 13)])
+        be.generate([f(i, "Green") for i in range(13, 21)])
+        be.generate([f(i, None) for i in range(21, 29)])
+    sent = [r.text_prompt.positive if r.HasField("text_prompt") else None for r in svc.chunk_reqs]
+    assert sent == [
+        "sunny The traffic light ahead is red.",
+        None,  # unchanged
+        "sunny The traffic light ahead is green.",
+        "sunny",  # out of range again: back to the base prompt
+    ]
+
+
+def test_traffic_light_prompt_off_by_default(server, tmp_path):
+    svc, port = server
+    frame = Frame(np.zeros((32, 64, 3), np.uint8), 0, Pose(), {"traffic_light": "Red"})
+    with OmniDreamsBackend(_cfg(port, tmp_path)) as be:
+        be.open(frame)
+        be.generate([frame] * 5)
+    assert not svc.chunk_reqs[0].HasField("text_prompt")

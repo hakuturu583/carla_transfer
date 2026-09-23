@@ -1,6 +1,7 @@
 import time
 
 import numpy as np
+import pytest
 
 from carla_transfer import Frame, StreamPipeline, TransferConfig
 from carla_transfer.backends.mock import MockBackend
@@ -131,3 +132,56 @@ def test_compare_sink_pairs_input_by_timestamp(monkeypatch, tmp_path):
     assert out.shape == (96, 192, 3)
     assert out[48, 32, 0] == 20 and out[48, 96, 0] == 30 and out[48, 160, 0] == 40
     assert 100 not in sink._inputs
+
+
+def test_discard_pending_drops_queued_and_partial_chunks():
+    cfg = _cfg()
+    backend = MockBackend(cfg, latency_s=0.2)
+    got: list[Frame] = []
+    pipe = StreamPipeline(cfg, backend=backend, sinks=[got.append], max_pending_chunks=1)
+    pipe.start(_frame(0))
+    for i in range(8):
+        pipe.push(_frame(i))
+    deadline = time.perf_counter() + 2
+    while pipe._pending and time.perf_counter() < deadline:  # chunk 0 is generating
+        time.sleep(0.005)
+    for i in range(8, 8 * 3 + 3):  # one chunk queued (the newest), 3 frames partial
+        pipe.push(_frame(i))
+    assert pipe.discard_pending() == 1
+    for i in range(100, 108):
+        pipe.push(_frame(i))
+    pipe.stop()
+    # chunk 0 and the post-discard chunk, nothing from before the discard
+    assert pipe.stats.chunks_generated == 2
+    assert [f.timestamp_us for f in got[8:]] == [i * 33_333 for i in range(100, 108)]
+
+
+@pytest.mark.parametrize("use_cv2", [True, False])
+def test_ftheta_remap_puts_a_ray_at_its_ftheta_radius(monkeypatch, use_cv2):
+    import builtins
+    import math
+
+    from carla_transfer.carla.source import FThetaRemap
+
+    if not use_cv2:
+        real_import = builtins.__import__
+
+        def no_cv2(name, *a, **k):
+            if name == "cv2":
+                raise ImportError(name)
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", no_cv2)
+    else:
+        pytest.importorskip("cv2")
+    remap = FThetaRemap(640, 352, 120.0)
+    f_ftheta = 320 / math.radians(60)
+    f_pin = (remap.pinhole_width / 2) / math.tan(math.radians(remap.pinhole_fov_deg / 2))
+    # A bright ray 40 deg to the right of the axis, at the horizon.
+    pin = np.zeros((remap.pinhole_height, remap.pinhole_width, 3), np.uint8)
+    px = round(remap.pinhole_width / 2 + f_pin * math.tan(math.radians(40)))
+    pin[remap.pinhole_height // 2 - 2 : remap.pinhole_height // 2 + 2, px - 2 : px + 2] = 255
+    out = remap(pin)
+    assert out.shape == (352, 640, 3)
+    col = int(np.argmax(out[176, :, 0]))
+    assert abs(col - (320 + f_ftheta * math.radians(40))) <= 2

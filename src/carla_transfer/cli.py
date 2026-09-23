@@ -11,6 +11,7 @@ carla-transfer selftest         run the pipeline with the mock backend (no GPU/C
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import math
 import sys
@@ -149,6 +150,11 @@ def cmd_carla(args: argparse.Namespace) -> int:
             mgr.up()
     elif args.action == "down":
         mgr.down()
+    elif args.action == "cleanup":
+        from carla_transfer.carla.tracks import cleanup_world
+
+        removed = cleanup_world(args.carla_host, args.carla_port)
+        print(f"removed {removed} actor(s); world asynchronous, traffic lights unfrozen")
     else:
         sys.stdout.write(mgr.logs())
     return 0
@@ -215,6 +221,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     import carla
 
     from carla_transfer.carla import CarlaCameraSource
+    from carla_transfer.carla.tracks import traffic_light_ahead
     from carla_transfer.hdmap.clipgt import CameraSpec
     from carla_transfer.pipeline import StreamPipeline
 
@@ -270,10 +277,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         world.apply_settings(settings)
 
     def step():
-        # `drive` (or another client) owns the tick in --follow mode.
-        if follow:
-            world.wait_for_tick()
-        else:
+        # `drive` (or another client) owns the tick in --follow mode; there
+        # the camera queue keeps every frame and get() takes them in order
+        # (waiting for the next tick here would skip frames whenever this
+        # loop falls behind, and skipped frames broke the timestamps).
+        if not follow:
             world.tick()
 
     spawn = None
@@ -285,7 +293,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         spawn = transform_from_rig_to_world(poses[0])
         log.info("spawning ego at the archive's initial pose: %s", spawn)
     if follow:
-        vehicle = _wait_for_vehicle(world, args.role_name, step)
+        # Waiting for the driver to spawn the hero does follow its ticks.
+        vehicle = _wait_for_vehicle(world, args.role_name, lambda: world.wait_for_tick(5.0))
     else:
         vehicle = _find_or_spawn_vehicle(world, args.role_name, spawn)
     # Same intrinsics/mount as the archive camera the model renders with
@@ -300,6 +309,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         transform=carla.Transform(
             carla.Location(x=cam.position[0], y=-cam.position[1], z=cam.position[2])
         ),
+        # The archive camera is f-theta; CARLA's pinhole view of it showed
+        # everything ahead 1.65x smaller than the condition.
+        ftheta=not args.pinhole_camera,
+        max_queue=0 if follow else 4,
     )
     from carla_transfer.sinks import CompareSink
 
@@ -316,37 +329,78 @@ def cmd_run(args: argparse.Namespace) -> int:
         pipe.set_backpressure(1, True)
     released = False
     n_pushed = 0
-    n_go = 0
+    # `drive --wait-for` writes the world frame of its first moving tick next
+    # to the go file; timestamps count ticks from there, i.e. from sample 0 of
+    # the track log the archive's obstacles come from. Frame ids, not sim
+    # time: CARLA 0.10's image.timestamp repeats or skips a tick now and then.
+    release_file = Path(args.go_file + ".released") if args.go_file else None
+    if release_file is not None:
+        release_file.unlink(missing_ok=True)
+    t0: int | None = None
+    if args.dump_trajectory:
+        pipe.backend.sent = []
     try:
         first = _first_frame(step, src)
         if not session_first:
             pipe.start(first)
         last_report = time.monotonic()
         t_start = time.monotonic()
-        while not args.duration or time.monotonic() - t_start < args.duration:
+        held: list = []  # frames between the release and the driver's t=0 tick
+        done = False
+        while not done and (not args.duration or time.monotonic() - t_start < args.duration):
             step()
             frame = src.get()
+            if cfg.omnidreams.sync_traffic_lights:
+                # From the pose the frame was captured at (not the vehicle's
+                # current one), so the light belongs to that tick.
+                ahead = traffic_light_ahead(
+                    world,
+                    vehicle,
+                    cfg.omnidreams.traffic_light_range_m,
+                    transform=frame.meta.get("vehicle_transform"),
+                )
+                frame.meta["traffic_light"] = str(ahead[0].get_state()) if ahead else None
             if args.go_file and not released and pipe.stats.chunks_generated >= 1:
+                # Standstill chunks still queued from the wait would be
+                # generated after the release, out of order with the moving
+                # ones: drop them (and the partial one) before driving starts.
+                dropped = pipe.discard_pending()
                 pipe.set_backpressure(1 if args.sync_to_model else 100_000, args.drop_stale)
                 Path(args.go_file).touch()
                 released = True
-                n_go = n_pushed
-                log.info("first chunk done; released the driver via %s", args.go_file)
-            # Timestamps count from the release, matching the driver's track
-            # log (t=0 at the first moving tick); standstill frames stay at 0.
-            frame.timestamp_us = (
-                max(0, n_pushed - n_go) * (1_000_000 // cfg.fps)
-                if args.go_file
-                else frame.timestamp_us
-            )
-            n_pushed += 1
-            if input_sink is not None:
-                input_sink(frame.resized(cfg.width, cfg.height))
-            for c in compare_sinks:
-                c.add_input(frame.resized(cfg.width, cfg.height))
-            if args.sim_seconds and released and n_pushed - n_go >= int(args.sim_seconds * cfg.fps):
-                break
-            pipe.push(frame)
+                log.info("first chunk done; released the driver via %s (%d standstill "
+                         "chunk(s) dropped)", args.go_file, dropped)  # fmt: skip
+            if released and t0 is None and release_file.exists():
+                t0 = json.loads(release_file.read_text())["frame"]
+                log.info("driver moving from world frame %d", t0)
+            # Timestamps are the ticks since the driver's first moving one,
+            # matching its track log (t=0 = sample 0); standstill frames before
+            # the release all stay at 0 (the actors are held at their t=0
+            # poses). After the release nothing goes out until that tick's
+            # frame, so the moving chunks start exactly at t=0 and cut the
+            # drive at the same ticks every run.
+            if args.go_file and released:
+                held.append(frame)
+                if t0 is None:
+                    continue
+                ready = [f for f in held if f.meta["carla_frame"] >= t0]
+                held = []
+                for f in ready:
+                    f.timestamp_us = (f.meta["carla_frame"] - t0) * (1_000_000 // cfg.fps)
+            else:
+                if args.go_file:
+                    frame.timestamp_us = 0
+                ready = [frame]
+            for f in ready:
+                if args.sim_seconds and t0 is not None and f.timestamp_us >= args.sim_seconds * 1e6:
+                    done = True
+                    break
+                n_pushed += 1
+                if input_sink is not None:
+                    input_sink(f.resized(cfg.width, cfg.height))
+                for c in compare_sinks:
+                    c.add_input(f.resized(cfg.width, cfg.height))
+                pipe.push(f)
             if time.monotonic() - last_report > 5:
                 s = pipe.stats
                 log.info(
@@ -367,6 +421,10 @@ def cmd_run(args: argparse.Namespace) -> int:
             input_sink.close()
         if args.go_file and Path(args.go_file).exists():
             Path(args.go_file).unlink()
+        if release_file is not None:
+            release_file.unlink(missing_ok=True)
+        if args.dump_trajectory:
+            Path(args.dump_trajectory).write_text(json.dumps(pipe.backend.sent))
         if not follow:
             settings.synchronous_mode = False
             world.apply_settings(settings)
@@ -443,11 +501,13 @@ def cmd_drive(args: argparse.Namespace) -> int:
         TrackReplayer,
         find_crosswalk_ahead,
         load_tracks,
+        set_light_group,
         settle_actors,
         spawn_dart_walker,
         spawn_traffic,
         spawn_walkers,
         step_walkers,
+        traffic_light_ahead,
     )
 
     cfg = _load_config(args)
@@ -494,7 +554,7 @@ def cmd_drive(args: argparse.Namespace) -> int:
     dart: list = []  # [(walker, ctrl, tf)] released when the hero nears the crosswalk
     dart_cw = None
     if args.replay_tracks:
-        replayer = TrackReplayer(world, load_tracks(args.replay_tracks))
+        replayer = TrackReplayer(world, load_tracks(args.replay_tracks), client=client)
         replayer.apply(0)
         vehicle = replayer.hero(args.role_name)
         if vehicle is None:
@@ -562,6 +622,7 @@ def cmd_drive(args: argparse.Namespace) -> int:
             if delay > 0:
                 time.sleep(delay)
 
+    red_light, green_at = None, None
     try:
         # Hold phase: everything still until the go file appears.
         if args.wait_for:
@@ -583,6 +644,18 @@ def cmd_drive(args: argparse.Namespace) -> int:
                 tm.ignore_lights_percentage(a, args.ignore_lights_pct)
             for w, *_ in walkers + dart:
                 w.set_simulate_physics(False)
+        # --red-light-for: the light ahead of the hero is held red, then
+        # switched green; every light is frozen so nothing else cycles.
+        if args.red_light_for and replayer is None:
+            found = traffic_light_ahead(world, vehicle, max_m=300.0)
+            if found is None:
+                raise SystemExit("--red-light-for: no traffic light ahead of the hero")
+            red_light = found[0]
+            world.freeze_all_traffic_lights(True)
+            set_light_group(red_light, "Red")
+            green_at = int(round(args.red_light_for * cfg.fps))
+            log.info("traffic light %s (%.0f m ahead) red for %.1f s",
+                     red_light.get_opendrive_id(), found[1], args.red_light_for)  # fmt: skip
         n_ticks = int(args.sim_seconds * cfg.fps) if args.sim_seconds else None
         if replayer is not None and n_ticks is None:
             n_ticks = replayer.frames
@@ -593,6 +666,9 @@ def cmd_drive(args: argparse.Namespace) -> int:
                 break
             if args.duration and time.monotonic() - t_start >= args.duration:
                 break
+            if red_light is not None and frame == green_at:
+                set_light_group(red_light, "Green")
+                log.info("traffic light %s green at frame %d", red_light.get_opendrive_id(), frame)
             if replayer is not None:
                 replayer.apply(frame)
             else:
@@ -608,6 +684,12 @@ def cmd_drive(args: argparse.Namespace) -> int:
                             "dart released at frame %d (hero %.1f m from the crosswalk)", frame, gap
                         )
             paced_tick()
+            if frame == 0 and args.wait_for:
+                # Tell the follower which tick is t=0 (see run --go-file).
+                snap = world.get_snapshot()
+                Path(args.wait_for + ".released").write_text(
+                    json.dumps({"frame": snap.frame, "elapsed": snap.timestamp.elapsed_seconds})
+                )
             if recorder is not None:
                 recorder.sample()
             frame += 1
@@ -617,6 +699,8 @@ def cmd_drive(args: argparse.Namespace) -> int:
     finally:
         if recorder is not None:
             recorder.save(args.record_tracks)
+        if red_light is not None:
+            world.freeze_all_traffic_lights(False)
         if replayer is None:
             vehicle.set_autopilot(False, args.tm_port)
             for a in traffic:
@@ -756,7 +840,13 @@ def build_parser() -> argparse.ArgumentParser:
     ao.set_defaults(fn=cmd_add_obstacles)
 
     ca = sub.add_parser("carla")
-    ca.add_argument("action", choices=["up", "down", "logs"])
+    ca.add_argument(
+        "action",
+        choices=["up", "down", "logs", "cleanup"],
+        help="cleanup: remove every vehicle/walker/sensor a crashed drive or run left behind",
+    )
+    ca.add_argument("--carla-host", default="127.0.0.1")
+    ca.add_argument("--carla-port", type=int, default=2000)
     ca.add_argument("--dry-run", action="store_true")
     ca.set_defaults(fn=cmd_carla)
 
@@ -813,6 +903,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="stop this many sim seconds after the release")  # fmt: skip
     r.add_argument("--record-input", metavar="FILE.mp4", help="also record the CARLA camera")
     r.add_argument(
+        "--dump-trajectory",
+        metavar="FILE.json",
+        help="write the timestamp and ego pose of every frame sent to the model",
+    )
+    r.add_argument(
+        "--pinhole-camera",
+        action="store_true",
+        help="CARLA's own pinhole camera instead of the archives' f-theta model",
+    )
+    r.add_argument(
         "--record-overlay",
         metavar="FILE.mp4",
         help="record the generated frames with the HD-map condition blended on top",
@@ -861,6 +961,13 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument(
         "--no-parked", action="store_true", help="do not record the map's parked vehicles"
     )
+    d.add_argument(
+        "--red-light-for",
+        type=float,
+        default=0.0,
+        help="hold the traffic light ahead of the hero red for this many sim seconds after the "
+        "release, then green (all lights frozen; pair with --ignore-lights-pct 0)",
+    )
     d.add_argument("--route", help="TM junction choices for the hero, e.g. Straight,Straight,Right")
     d.add_argument(
         "--spawn-back-m",
@@ -896,8 +1003,21 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _raise_on_sigterm() -> None:
+    """Turn SIGTERM (timeout, kill, a script's cleanup) into KeyboardInterrupt,
+    so drive/run leave through their finally blocks and take their CARLA
+    actors with them instead of leaving them in the world."""
+    import signal
+
+    def handler(signum, frame):
+        raise KeyboardInterrupt(f"signal {signum}")
+
+    signal.signal(signal.SIGTERM, handler)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    _raise_on_sigterm()
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",

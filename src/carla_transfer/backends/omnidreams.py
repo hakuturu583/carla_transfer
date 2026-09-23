@@ -52,6 +52,12 @@ class OmniDreamsBackend(WorldModelBackend):
                 self.scene_archive = self.od.scene_archive.read_bytes()
             else:
                 self.scene_archive = b"scene://" + self.od.scene_archive.name.encode()
+        # The prompt the session runs under, and the one chunks build on.
+        self.base_prompt = self.od.positive_prompt or _archive_prompt(self.od.scene_archive)
+        self._sent_prompt = self.base_prompt
+        # When a list: every frame sent to the model, as {t_us, xyz, q, prompt}
+        # (run --dump-trajectory), to check two runs saw the same drive.
+        self.sent: list[dict] | None = None
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -75,7 +81,7 @@ class OmniDreamsBackend(WorldModelBackend):
         req = video_model_pb2.SessionRequest(
             static_world_map=video_model_pb2.StaticWorldMap(hdmap_parquets=self.scene_archive),
             text_prompt=video_model_pb2.TextPrompt(
-                positive=self.od.positive_prompt, negative=self.od.negative_prompt
+                positive=self.base_prompt, negative=self.od.negative_prompt
             ),
             camera_specs=[self._camera_spec(w, h, self.od.camera_name)],
             # With initial_image="archive" no frame is sent and the server
@@ -112,6 +118,19 @@ class OmniDreamsBackend(WorldModelBackend):
             # walkers) so the model renders dynamic agents.
             dynamic_state=video_model_pb2.DynamicWorldState(),
         )
+        prompt = self.chunk_prompt(sim_frames)
+        if prompt != self._sent_prompt:
+            req.text_prompt.positive = prompt
+            self._sent_prompt = prompt
+            log.info("prompt for chunk at t=%.2fs: %r", sim_frames[-1].timestamp_us / 1e6,
+                     prompt[len(self.base_prompt):].strip() or "(base)")  # fmt: skip
+        if self.sent is not None:
+            self.sent.extend(
+                {"t_us": f.timestamp_us, "xyz": list((f.pose or Pose()).xyz),
+                 "q": list((f.pose or Pose()).quat_xyzw), "prompt": self._sent_prompt,
+                 "carla_frame": f.meta.get("carla_frame")}
+                for f in sim_frames
+            )  # fmt: skip
         ret = self._stub.render_video_chunk(req)
         out: list[Frame] = []
         for cam in ret.camera_outputs:
@@ -125,6 +144,16 @@ class OmniDreamsBackend(WorldModelBackend):
                     meta["hdmap"] = hdmaps[i]
                 out.append(Frame(decode_image(img.data), ts, None, meta))
         return out
+
+    def chunk_prompt(self, sim_frames: Sequence[Frame]) -> str:
+        """The prompt for a chunk: the base prompt plus, with
+        ``sync_traffic_lights``, the sentence for the state of the light ahead
+        at the chunk's last frame (none when no light is in range)."""
+        if not self.od.sync_traffic_lights or not sim_frames:
+            return self.base_prompt
+        state = sim_frames[-1].meta.get("traffic_light")
+        sentence = self.od.traffic_light_prompts.get(state or "", "")
+        return f"{self.base_prompt.rstrip()} {sentence}".strip() if sentence else self.base_prompt
 
     def close(self) -> None:
         if self._session_id is not None:
@@ -166,3 +195,17 @@ def _pose_pb(p: Pose) -> common_pb2.Pose:
     return common_pb2.Pose(
         vec=common_pb2.Vec3(x=x, y=y, z=z), quat=common_pb2.Quat(x=qx, y=qy, z=qz, w=qw)
     )
+
+
+def _archive_prompt(archive) -> str:
+    """The archive's own default prompt (prompt1.txt), which the server uses
+    when the session sends none."""
+    import zipfile
+
+    if not archive:
+        return ""
+    try:
+        with zipfile.ZipFile(archive) as zf:
+            return zf.read("prompt1.txt").decode("utf-8").strip()
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return ""
