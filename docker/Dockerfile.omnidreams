@@ -1,4 +1,4 @@
-# OmniDreams world model for carla_transfer on a single 24 GB GPU.
+# OmniDreams world model for carla_transfer (24 GB Ampere or 96 GB Blackwell).
 #
 # Build (context = repo root):
 #   carla-transfer -c configs/omnidreams_rtx3090.yaml build
@@ -22,7 +22,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     UV_PYTHON_INSTALL_DIR=/opt/uv/python \
     TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor \
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-    HF_HOME=/root/.cache/huggingface
+    HF_HOME=/root/.cache/huggingface \
+    OMNIDREAMS_SINGLEVIEW_NATIVE_BUILD_ROOT=/root/.cache/omnidreams_native
 
 RUN apt-get update -qq \
     && apt-get install -y -qq --no-install-recommends \
@@ -36,13 +37,22 @@ RUN git clone --depth 1 --branch "${FLASHDREAMS_REF}" "${FLASHDREAMS_REPO}" . \
     && uv python install 3.12 \
     && uv sync --package flashdreams-omnidreams --extra interactive-drive
 
+# Pinned CUTLASS / SageAttention / SpargeAttn / cudnn-frontend sources for the
+# single-view native extension (Blackwell SM 12.0 manifests with
+# native_dit_acceleration). Sources only: the extension is JIT-built on first
+# use into OMNIDREAMS_SINGLEVIEW_NATIVE_BUILD_ROOT. Unused on Ampere.
+ARG SYNC_NATIVE_THIRDPARTY=1
+RUN if [ "${SYNC_NATIVE_THIRDPARTY}" = "1" ]; then \
+        .venv/bin/python integrations/omnidreams/omnidreams_singleview/tools/sync_thirdparty.py sync; \
+    fi
+
 # This package (client + in-container server) into the same venv.
 COPY pyproject.toml README.md /opt/carla_transfer/
 COPY src /opt/carla_transfer/src
 RUN uv pip install --python /opt/flashdreams/.venv/bin/python /opt/carla_transfer
 
 ENV PATH="/opt/flashdreams/.venv/bin:${PATH}"
-VOLUME ["/root/.cache/huggingface", "/root/.cache/torchinductor"]
+VOLUME ["/root/.cache/huggingface", "/root/.cache/torchinductor", "/root/.cache/omnidreams_native"]
 EXPOSE 50051
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh

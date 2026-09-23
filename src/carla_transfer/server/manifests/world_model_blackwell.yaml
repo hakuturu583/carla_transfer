@@ -1,0 +1,36 @@
+# World-model manifest for a single 96 GB Blackwell workstation GPU
+# (RTX PRO 6000 Blackwell, SM 12.0) serving carla_transfer.
+#
+# Differences from the fork's example_world_model_rtx3090.yaml:
+#   - native_dit_acceleration: required. The OmniDreams single-view native
+#     extension (FP8 KV cache + cuDNN attention) is built for SM 12.0; this is
+#     the path the upstream perf manifest uses. It is JIT-built on first start
+#     into $OMNIDREAMS_SINGLEVIEW_NATIVE_BUILD_ROOT (mounted persistently by
+#     carla-transfer, see DockerConfig.native_build_cache).
+#   - Run without --offload-text-encoder: 96 GB holds the ~15 GB Cosmos-Reason1
+#     encoder next to the DiT, so scene (re)loads do not reload it.
+#   - resolution_wh here is only the default; carla-transfer passes the YAML
+#     width/height as --resolution.
+#
+# Kept from the 3090 manifest: torch.compile + CUDA graphs, LightVAE/LightTAE,
+# attention sinks against long-rollout drift, the 2-step [1000, 100] schedule.
+resolution_wh: [1280, 704]
+fps: 30
+num_frames_per_block: 8
+compile_net: true
+light_vae: true
+encode_with_pixel_shuffle: false
+# Single-view VAE checkpoints require local_attn_size == 6.
+local_attn_size: 6
+skip_finalize_kv_cache: true
+sink_size: 2
+denoising_steps: [1000, 100]
+upsampling_enabled: false
+upsampling_scale: 4
+device: cuda:0
+seed_for_every_rollout:
+
+native_dit_acceleration: required            # disabled | auto | required
+native_dit_backend: fp8_kvcache_cudnn        # fp8_kvcache_cudnn | bf16
+native_dit_attention_backend: cudnn          # auto | cudnn | sparge | sage3 | sage3_fp8
+native_vae_encoder: disabled                 # disabled | fp8

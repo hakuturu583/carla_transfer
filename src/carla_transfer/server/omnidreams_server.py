@@ -60,6 +60,9 @@ from carla_transfer.server.geometry import (
 log = logging.getLogger("carla_transfer.server")
 
 INITIAL_CHUNK_FRAMES = 5
+# Manifests shipped with carla_transfer (e.g. world_model_blackwell.yaml);
+# a bare name is looked up here before the fork's bundled configs.
+MANIFEST_DIR = Path(__file__).resolve().parent / "manifests"
 
 
 @dataclasses.dataclass
@@ -144,7 +147,9 @@ class OmniDreamsWorldModelService(vm_grpc.WorldModelServiceServicer):
         from omnidreams.interactive_drive.config import ChunkConfig, RasterConfig
         from omnidreams.interactive_drive.world_model.manifest import load_world_model_manifest
 
-        manifest = load_world_model_manifest(resolve_manifest_path(self.opts.manifest))
+        ours = MANIFEST_DIR / self.opts.manifest
+        path = ours if ours.is_file() else resolve_manifest_path(self.opts.manifest)
+        manifest = load_world_model_manifest(path)
         if self.opts.resolution_wh is not None:
             manifest = dataclasses.replace(manifest, resolution_wh=self.opts.resolution_wh)
         if self.opts.fps is not None:
@@ -415,7 +420,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--manifest",
         default="example_world_model_rtx3090.yaml",
-        help="bundled interactive-drive manifest name or a path",
+        help="manifest name (carla_transfer's server/manifests, then the fork's "
+        "interactive-drive configs) or a path",
     )
     p.add_argument("--offload-text-encoder", dest="offload", action="store_true", default=True)
     p.add_argument("--no-offload-text-encoder", dest="offload", action="store_false")

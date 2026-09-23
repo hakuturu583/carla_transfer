@@ -38,6 +38,12 @@ class DockerConfig:
     inductor_cache: Path = field(
         default_factory=lambda: Path.home() / ".cache" / "carla_transfer" / "torchinductor"
     )
+    # Persistent build root for the OmniDreams single-view native extension
+    # (Blackwell manifests with native_dit_acceleration); the JIT build takes
+    # minutes and would otherwise be redone on every container start.
+    native_build_cache: Path = field(
+        default_factory=lambda: Path.home() / ".cache" / "carla_transfer" / "omnidreams_native"
+    )
     shm_size: str = "16g"
     env: dict[str, str] = field(default_factory=dict)
     extra_args: list[str] = field(default_factory=list)
@@ -67,6 +73,11 @@ class CarlaServerConfig:
     width: int = 320
     height: int = 180
     extra_args: list[str] = field(default_factory=list)
+    # Extra arguments for the CARLA launcher (after the image), e.g.
+    # ["-ExecCmds=t.MaxFPS 0, r.VSync 0"]: UE caps off-screen rendering at
+    # 60 fps, and a camera sensor delivers one frame late, so a synchronous
+    # tick with a camera tops out at ~30 Hz unless the cap is lifted.
+    launcher_args: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -160,7 +171,9 @@ class TransferConfig:
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> TransferConfig:
         raw = dict(raw)
-        docker_raw = _paths(raw.pop("docker", None) or {}, "hf_cache", "inductor_cache")
+        docker_raw = _paths(
+            raw.pop("docker", None) or {}, "hf_cache", "inductor_cache", "native_build_cache"
+        )
         # An `env:` block that only holds comments parses as None.
         docker_raw["env"] = docker_raw.get("env") or {}
         docker = DockerConfig(**docker_raw)

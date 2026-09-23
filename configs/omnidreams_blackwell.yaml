@@ -1,0 +1,54 @@
+# OmniDreams on a single RTX PRO 6000 Blackwell (96 GB, SM 12.0), CARLA 0.10
+# on the same card. Differences from omnidreams_rtx3090.yaml:
+#   - manifest world_model_blackwell.yaml: native FP8 KV-cache + cuDNN DiT
+#     path (Blackwell-only), text encoder kept resident (no offload).
+#   - CARLA with UE's 60 fps cap lifted (see carla.launcher_args).
+#
+# Measured end to end (drive --realtime + run --follow, Town10, CARLA Low
+# uncapped next to the model; model_ms = server time per 8-frame chunk):
+#   resolution   model_ms   model fps   end-to-end fps
+#   640 x 352       126        63          29.8   <- default: real time
+#   896 x 496       274        29          22.9
+#   1024 x 560      356        22          19.4
+#   1280 x 704      705        11          10.0
+# At 896x496 and up the model and CARLA's camera share the GPU and both slow
+# to ~24 Hz; only 640x352 keeps the 30 fps cadence.
+backend: omnidreams
+width: 640
+height: 352
+fps: 30
+docker:
+  image: carla-transfer/omnidreams:latest
+  container_name: carla-transfer-omnidreams
+  startup_timeout_s: 1800
+  env:
+    # The first start JIT-builds the native extension (CUTLASS/SageAttention
+    # templates, several GB of RAM per nvcc). Unbounded, ninja runs one job
+    # per core (32) and nvcc gets OOM-killed on this 31 GB host.
+    MAX_JOBS: "4"
+carla:
+  image: carlasim/carla:0.10.0
+  # With initial_image: archive the model only takes CARLA's poses, so the
+  # camera's look does not reach the output; Low leaves more GPU to the model
+  # (uncapped, camera 896x496: Low 45 Hz vs Epic 38 Hz). The start-up crash
+  # Low had on the 3090 host did not occur here.
+  quality_level: Low
+  # Off-screen viewport only (the model camera is a separate sensor). At
+  # 1280x720 it cost CARLA's tick rate ~20% next to the model.
+  width: 320
+  height: 180
+  # Lift UE's 60 fps off-screen cap: with a camera the synchronous tick was
+  # stuck at ~28 Hz (30 = 60/2); uncapped it reaches 45 Hz (Low, 896x496).
+  launcher_args: ["-ExecCmds=t.MaxFPS 0, r.VSync 0"]
+omnidreams:
+  port: 50051
+  frames_per_chunk: 8
+  first_chunk_frames: 5
+  manifest: world_model_blackwell.yaml
+  offload_text_encoder: false
+  camera_name: camera_front_wide_120fov
+  scene_archive: outputs/scenes/town10.usdz
+  positive_prompt: >-
+    Driving scene from a front-facing car camera. Urban environment with roads,
+    vehicles, pedestrians, traffic signs, and buildings. Clear visibility,
+    realistic lighting, photorealistic quality. High resolution dashcam footage.

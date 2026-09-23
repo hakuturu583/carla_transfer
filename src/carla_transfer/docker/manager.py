@@ -78,6 +78,7 @@ class ContainerManager:
         caches, env. No image or command."""
         self.d.hf_cache.mkdir(parents=True, exist_ok=True)
         self.d.inductor_cache.mkdir(parents=True, exist_ok=True)
+        self.d.native_build_cache.mkdir(parents=True, exist_ok=True)
         args = ["docker", "run", "--rm"] + (["-d"] if detached else [])
         if name:
             args += ["--name", name]
@@ -88,6 +89,8 @@ class ContainerManager:
             "-v", f"{self.d.hf_cache}:/root/.cache/huggingface",
             "-v", f"{self.d.inductor_cache}:/root/.cache/torchinductor",
             "-e", "TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor",
+            "-v", f"{self.d.native_build_cache}:/root/.cache/omnidreams_native",
+            "-e", "OMNIDREAMS_SINGLEVIEW_NATIVE_BUILD_ROOT=/root/.cache/omnidreams_native",
             "-e", "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
         ]  # fmt: skip
         # Forward the host HF token unless the config sets one explicitly.

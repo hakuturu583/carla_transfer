@@ -61,6 +61,7 @@ class CarlaServerManager:
             # world model hogs the GPU (session open, first-chunk compile).
             "-NoTimeouts",
             f"-carla-rpc-port={c.rpc_port}",
+            *c.launcher_args,
         ]  # fmt: skip
         # -benchmark -fps=N is deliberately not passed: with it CARLA 0.10
         # off-screen hit the RenderThread timeout on start; the tick rate is
