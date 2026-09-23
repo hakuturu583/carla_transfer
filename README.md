@@ -240,7 +240,10 @@ under `outputs/scenarios/<name>/`:
   the base archive (`add-obstacles`). Spawned actors are first held braked
   until they rest on the ground: spawns are lifted 0.3-1 m, and recording
   them in mid-air put floating cars into the first image.
-- `image`: `carla-transfer first-image` renders the archive's control video and
+- `image`: `carla-transfer first-image` renders each archive's control video and
   regenerates its Cosmos3 first image, so the cars at t=0 are this scenario's.
+  All archives share one raster server and one Cosmos3 load, and only a
+  9-frame / 20-step clip is generated (the first frame is all that is used):
+  six scenarios take 3.5 min on the Blackwell card instead of 19.
 - `run`: replays each log with `run --record-compare`, which writes
   [CARLA camera | HD-map condition | generated] side by side.

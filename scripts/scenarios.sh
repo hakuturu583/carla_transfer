@@ -6,8 +6,8 @@
 #
 # STAGE: record  pass 1 — Traffic Manager drive, every actor logged
 #                (outputs/scenarios/<name>/tracks.json) → archive.usdz
-#        image   Cosmos3 first image for each archive (stops the model server:
-#                the raster-only server needs its port)
+#        image   Cosmos3 first image for every archive in one batch (stops the
+#                model server: the raster-only server needs its port)
 #        run     model server up; replay each log with run --record-compare
 #        all     record + image + run
 # NAME defaults to every scenario below. Needs CARLA up (carla-transfer carla up).
@@ -67,11 +67,13 @@ record() {
 }
 
 image() {
-  local name=$1 dir=$OUT/$1
-  echo "=== image $name"
+  # One raster server and one Cosmos3 load for every named scenario.
+  local archives=()
+  for n in "$@"; do archives+=("$OUT/$n/archive.usdz"); done
+  echo "=== image $*"
   # shellcheck disable=SC2086
-  $CT -c "$dir/config.yaml" first-image "$dir/archive.usdz" --work-dir "$dir/first_image" \
-    --cosmos3-args $COSMOS3_ARGS > "$dir/image.log" 2>&1
+  $CT -c "$CONFIG" first-image "${archives[@]}" --cosmos3-args $COSMOS3_ARGS \
+    > "$OUT/image.log" 2>&1
 }
 
 run() {
@@ -93,14 +95,14 @@ case $STAGE in
   record) for n in "${NAMES[@]}"; do record "$n"; done ;;
   image)
     $CT -c "$CONFIG" down
-    for n in "${NAMES[@]}"; do image "$n"; done ;;
+    image "${NAMES[@]}" ;;
   run)
     $CT -c "$CONFIG" up
     for n in "${NAMES[@]}"; do run "$n"; done ;;
   all)
     for n in "${NAMES[@]}"; do record "$n"; done
     $CT -c "$CONFIG" down
-    for n in "${NAMES[@]}"; do image "$n"; done
+    image "${NAMES[@]}"
     $CT -c "$CONFIG" up
     for n in "${NAMES[@]}"; do run "$n"; done ;;
   *) echo "unknown stage $STAGE" >&2; exit 2 ;;

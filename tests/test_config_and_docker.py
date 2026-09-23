@@ -87,6 +87,28 @@ def test_raster_and_cosmos3_job_args(fake_docker):
     assert job[-3:] == [COSMOS3_IMAGE, "--revision", "fp8"]
 
 
+def test_cosmos3_batch_mounts_common_root(fake_docker, monkeypatch):
+    from carla_transfer.hdmap import prepare
+
+    cfg = TransferConfig.from_yaml(CONFIGS / "omnidreams_rtx3090.yaml")
+    cfg.docker.hf_cache = fake_docker / "hf"
+    cfg.docker.inductor_cache = fake_docker / "inductor"
+    dirs = [fake_docker / "scenarios" / n / "first_image" for n in ("a", "b")]
+    seen = []
+    monkeypatch.setattr(prepare.subprocess, "run", lambda args, check: seen.append(args))
+    out = prepare.run_cosmos3_docker(cfg, dirs, ["--steps", "20"])
+    (args,) = seen  # one container for the whole batch
+    assert f"{(fake_docker / 'scenarios').resolve()}:/work" in args
+    i = args.index("--control")
+    assert args[i : i + 3] == [
+        "--control",
+        "/work/a/first_image/control_wsm.mp4",
+        "/work/b/first_image/control_wsm.mp4",
+    ]
+    assert args[-2:] == ["--steps", "20"]
+    assert out == [d / "cosmos3" / "first_image.png" for d in dirs]
+
+
 def test_carla_server_args(fake_docker):
     from carla_transfer.docker.carla import CarlaServerManager
 

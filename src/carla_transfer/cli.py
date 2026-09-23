@@ -84,19 +84,22 @@ def cmd_prepare_scene(args: argparse.Namespace) -> int:
 
 
 def cmd_first_image(args: argparse.Namespace) -> int:
-    """Regenerate an existing archive's first_image.png (e.g. after
-    add-obstacles changed what stands in front of the ego at t=0)."""
-    import tempfile
-
-    from carla_transfer.hdmap.prepare import cosmos3_first_image, replace_in_archive
+    """Regenerate archives' first_image.png (e.g. after add-obstacles changed
+    what stands in front of the ego at t=0). Several archives share one raster
+    server and one Cosmos3 load."""
+    from carla_transfer.hdmap.prepare import cosmos3_first_images, replace_in_archive
 
     cfg = _load_config(args)
-    archive = Path(args.archive)
-    work_dir = Path(args.work_dir or tempfile.mkdtemp(prefix="carla_transfer_"))
-    work_dir.mkdir(parents=True, exist_ok=True)
-    first = cosmos3_first_image(cfg, archive, work_dir, args.local, args.cosmos3_args)
-    replace_in_archive(archive, "first_image.png", first.read_bytes())
-    print(f"{archive}: first_image.png from {first}")
+    archives = [Path(a) for a in args.archives]
+    if args.work_dir and len(archives) > 1:
+        raise SystemExit("--work-dir takes a single archive")
+    work_dirs = [Path(args.work_dir)] if args.work_dir else [
+        a.parent / f"{a.stem}_first_image" for a in archives
+    ]  # fmt: skip
+    firsts = cosmos3_first_images(cfg, archives, work_dirs, args.local, args.cosmos3_args)
+    for archive, first in zip(archives, firsts, strict=True):
+        replace_in_archive(archive, "first_image.png", first.read_bytes())
+        print(f"{archive}: first_image.png from {first}")
     return 0
 
 
@@ -707,9 +710,13 @@ def build_parser() -> argparse.ArgumentParser:
     )  # fmt: skip
     ps.set_defaults(fn=cmd_prepare_scene)
 
-    fi = sub.add_parser("first-image", help="regenerate an archive's first image (Cosmos3)")
-    fi.add_argument("archive")
-    fi.add_argument("--work-dir", help="where the control video and Cosmos3 output go")
+    fi = sub.add_parser("first-image", help="regenerate archives' first images (Cosmos3)")
+    fi.add_argument("archives", nargs="+")
+    fi.add_argument(
+        "--work-dir",
+        help="control video + Cosmos3 output (one archive only; "
+        "default: <archive stem>_first_image next to it)",
+    )
     fi.add_argument("--local", action="store_true", help="run raster + Cosmos3 in this env")
     fi.add_argument(
         "--cosmos3-args", nargs=argparse.REMAINDER, default=[],

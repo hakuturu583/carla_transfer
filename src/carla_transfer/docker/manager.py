@@ -79,6 +79,7 @@ class ContainerManager:
         self.d.hf_cache.mkdir(parents=True, exist_ok=True)
         self.d.inductor_cache.mkdir(parents=True, exist_ok=True)
         self.d.native_build_cache.mkdir(parents=True, exist_ok=True)
+        self.d.torch_extensions_cache.mkdir(parents=True, exist_ok=True)
         args = ["docker", "run", "--rm"] + (["-d"] if detached else [])
         if name:
             args += ["--name", name]
@@ -91,6 +92,7 @@ class ContainerManager:
             "-e", "TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor",
             "-v", f"{self.d.native_build_cache}:/root/.cache/omnidreams_native",
             "-e", "OMNIDREAMS_SINGLEVIEW_NATIVE_BUILD_ROOT=/root/.cache/omnidreams_native",
+            "-v", f"{self.d.torch_extensions_cache}:/root/.cache/torch_extensions",
             "-e", "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
         ]  # fmt: skip
         # Forward the host HF token unless the config sets one explicitly.
@@ -158,7 +160,7 @@ class ContainerManager:
             cmd.append("--raster-only")
         return cmd
 
-    def raster_server_args(self, archive: Path, name: str) -> list[str]:
+    def raster_server_args(self, archive: Path | None, name: str) -> list[str]:
         """OmniDreams image in --raster-only mode (no world model) for
         rendering HD-map control videos."""
         c = self.config

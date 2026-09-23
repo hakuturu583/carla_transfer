@@ -44,6 +44,11 @@ class DockerConfig:
     native_build_cache: Path = field(
         default_factory=lambda: Path.home() / ".cache" / "carla_transfer" / "omnidreams_native"
     )
+    # torch cpp_extension JIT builds (the ludus rasterizer plugin, ~11 s per
+    # container start otherwise).
+    torch_extensions_cache: Path = field(
+        default_factory=lambda: Path.home() / ".cache" / "carla_transfer" / "torch_extensions"
+    )
     shm_size: str = "16g"
     env: dict[str, str] = field(default_factory=dict)
     extra_args: list[str] = field(default_factory=list)
@@ -172,7 +177,11 @@ class TransferConfig:
     def from_dict(cls, raw: dict[str, Any]) -> TransferConfig:
         raw = dict(raw)
         docker_raw = _paths(
-            raw.pop("docker", None) or {}, "hf_cache", "inductor_cache", "native_build_cache"
+            raw.pop("docker", None) or {},
+            "hf_cache",
+            "inductor_cache",
+            "native_build_cache",
+            "torch_extensions_cache",
         )
         # An `env:` block that only holds comments parses as None.
         docker_raw["env"] = docker_raw.get("env") or {}
