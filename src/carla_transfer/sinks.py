@@ -84,6 +84,51 @@ class OverlaySink:
         self.inner.close()
 
 
+class CompareSink:
+    """mp4 of [CARLA camera | HD-map condition | generated] side by side, for
+    checking what the model was conditioned on. Generated frames carry their
+    input frame's timestamp; the run loop hands inputs in via add_input()."""
+
+    LABELS = ("CARLA", "HD-map condition", "generated")
+
+    def __init__(self, path: str | Path, fps: int):
+        self.inner = Mp4Sink(path, fps)
+        self._inputs: dict[int, np.ndarray] = {}
+        self._lock = threading.Lock()
+
+    def add_input(self, frame: Frame) -> None:
+        with self._lock:
+            # Standstill frames all have timestamp 0; the latest one wins.
+            self._inputs[frame.timestamp_us] = frame.rgb
+
+    def __call__(self, frame: Frame) -> None:
+        from PIL import Image, ImageDraw
+
+        h, w = frame.rgb.shape[:2]
+        with self._lock:
+            carla_rgb = self._inputs.get(frame.timestamp_us)
+            # Inputs older than this frame are never shown again.
+            for ts in [t for t in self._inputs if 0 < t < frame.timestamp_us]:
+                del self._inputs[ts]
+        blank = np.zeros((h, w, 3), np.uint8)
+        panels = []
+        for img in (carla_rgb, frame.meta.get("hdmap"), frame.rgb):
+            if img is None:
+                img = blank
+            elif img.shape[:2] != (h, w):
+                img = np.asarray(Image.fromarray(img).resize((w, h)))
+            panels.append(img)
+        canvas = Image.fromarray(np.concatenate(panels, axis=1))
+        draw = ImageDraw.Draw(canvas)
+        for i, label in enumerate(self.LABELS):
+            draw.text((i * w + 8, 6), label, fill=(255, 255, 0))
+        draw.text((8, h - 18), f"t={frame.timestamp_us / 1e6:.2f}s", fill=(255, 255, 0))
+        self.inner(Frame(np.asarray(canvas), frame.timestamp_us, frame.pose, frame.meta))
+
+    def close(self) -> None:
+        self.inner.close()
+
+
 class MjpegSink:
     """Serves the latest frame as multipart MJPEG on http://host:port/ — the
     quickest way to watch output from another machine (e.g. over Tailscale)."""

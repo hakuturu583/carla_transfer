@@ -135,6 +135,25 @@ as `scene://<file>` resolved against the container's `/scenes` mount — the
 official archives are 2.3 GB) plus the CARLA frame as the initial image and
 the prompt; the first `render_video_chunk` must carry 5 poses, later ones 8.
 
+## RTX PRO 6000 Blackwell (96 GB)
+
+`configs/omnidreams_blackwell.yaml` uses `server/manifests/world_model_blackwell.yaml`:
+the OmniDreams single-view native path (FP8 KV cache + cuDNN attention, SM 12.0
+only), the text encoder kept resident, CARLA 0.10 at Low with UE's off-screen
+60 fps cap lifted (`carla.launcher_args`). Measured with CARLA on the same card
+(`drive --realtime` + `run --follow`, Town10):
+
+| resolution | model ms / 8-frame chunk | end-to-end fps |
+|---|---|---|
+| **640x352** (default) | 126 | 29.8 |
+| 896x496 | 274 | 22.9 |
+| 1024x560 | 356 | 19.4 |
+| 1280x704 | 705 | 10.0 |
+
+The first start JIT-builds the native extension into
+`~/.cache/carla_transfer/omnidreams_native`; `MAX_JOBS=4` keeps nvcc from
+running out of host RAM on a 31 GB machine.
+
 ## CARLA map → scene archive
 
 [roadgen](https://pypi.org/project/roadgen/) reads OpenDRIVE and writes the
@@ -209,3 +228,19 @@ log (t=0 at the first moving tick); standstill frames during the model's
 warm-up are dropped, everything after the release is queued without loss.
 Live per-chunk actors (the proto's `DynamicWorldState`) need an update API in
 ludus/flashdreams and are the next step.
+
+## Scenario set
+
+`scripts/scenarios.sh CONFIG STAGE [NAME...]` runs the two-pass flow above for
+a set of Town10 scenarios (dense traffic, crossing pedestrians, a fast hero,
+straight through / left at the first junction, a crosswalk dart-out), each
+under `outputs/scenarios/<name>/`:
+
+- `record`: Traffic Manager drive with every actor logged, baked into a copy of
+  the base archive (`add-obstacles`). Spawned actors are first held braked
+  until they rest on the ground: spawns are lifted 0.3-1 m, and recording
+  them in mid-air put floating cars into the first image.
+- `image`: `carla-transfer first-image` renders the archive's control video and
+  regenerates its Cosmos3 first image, so the cars at t=0 are this scenario's.
+- `run`: replays each log with `run --record-compare`, which writes
+  [CARLA camera | HD-map condition | generated] side by side.

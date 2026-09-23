@@ -83,6 +83,23 @@ def cmd_prepare_scene(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_first_image(args: argparse.Namespace) -> int:
+    """Regenerate an existing archive's first_image.png (e.g. after
+    add-obstacles changed what stands in front of the ego at t=0)."""
+    import tempfile
+
+    from carla_transfer.hdmap.prepare import cosmos3_first_image, replace_in_archive
+
+    cfg = _load_config(args)
+    archive = Path(args.archive)
+    work_dir = Path(args.work_dir or tempfile.mkdtemp(prefix="carla_transfer_"))
+    work_dir.mkdir(parents=True, exist_ok=True)
+    first = cosmos3_first_image(cfg, archive, work_dir, args.local, args.cosmos3_args)
+    replace_in_archive(archive, "first_image.png", first.read_bytes())
+    print(f"{archive}: first_image.png from {first}")
+    return 0
+
+
 def cmd_add_obstacles(args: argparse.Namespace) -> int:
     """Write a `drive --record-tracks` log into the archive as clipgt/obstacle.parquet."""
     import zipfile
@@ -161,6 +178,9 @@ def _make_sinks(cfg: TransferConfig, args: argparse.Namespace) -> list:
     if getattr(args, "record_overlay", None):
         cfg.omnidreams.return_hdmap = True
         out.append(S.OverlaySink(Path(args.record_overlay), cfg.fps))
+    if getattr(args, "record_compare", None):
+        cfg.omnidreams.return_hdmap = True
+        out.append(S.CompareSink(Path(args.record_compare), cfg.fps))
     return out
 
 
@@ -261,6 +281,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             carla.Location(x=cam.position[0], y=-cam.position[1], z=cam.position[2])
         ),
     )
+    from carla_transfer.sinks import CompareSink
+
+    compare_sinks = [s for s in sinks if isinstance(s, CompareSink)]
     input_sink = None
     if args.record_input:
         from carla_transfer.sinks import Mp4Sink
@@ -299,6 +322,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             n_pushed += 1
             if input_sink is not None:
                 input_sink(frame.resized(cfg.width, cfg.height))
+            for c in compare_sinks:
+                c.add_input(frame.resized(cfg.width, cfg.height))
             if args.sim_seconds and released and n_pushed - n_go >= int(args.sim_seconds * cfg.fps):
                 break
             pipe.push(frame)
@@ -398,6 +423,7 @@ def cmd_drive(args: argparse.Namespace) -> int:
         TrackReplayer,
         find_crosswalk_ahead,
         load_tracks,
+        settle_actors,
         spawn_dart_walker,
         spawn_traffic,
         spawn_walkers,
@@ -495,6 +521,10 @@ def cmd_drive(args: argparse.Namespace) -> int:
                 )
             ]
             world.tick()
+        # Let everything land before anything is recorded or driven.
+        settle_actors(world, [vehicle, *traffic], walkers + dart)
+        for a in traffic:
+            a.set_autopilot(True, args.tm_port)
     log.info("hero %s at %s", vehicle.id, vehicle.get_transform())
 
     period = 1.0 / (args.tick_fps or cfg.fps)
@@ -524,6 +554,8 @@ def cmd_drive(args: argparse.Namespace) -> int:
                 tm.set_route(vehicle, args.route.split(","))
             if args.speed_pct:
                 tm.vehicle_percentage_speed_difference(vehicle, args.speed_pct)
+            if args.target_speed:
+                tm.set_desired_speed(vehicle, args.target_speed)
             tm.ignore_lights_percentage(vehicle, args.ignore_lights_pct)
             for a in traffic:
                 tm.ignore_lights_percentage(a, args.ignore_lights_pct)
@@ -675,6 +707,16 @@ def build_parser() -> argparse.ArgumentParser:
     )  # fmt: skip
     ps.set_defaults(fn=cmd_prepare_scene)
 
+    fi = sub.add_parser("first-image", help="regenerate an archive's first image (Cosmos3)")
+    fi.add_argument("archive")
+    fi.add_argument("--work-dir", help="where the control video and Cosmos3 output go")
+    fi.add_argument("--local", action="store_true", help="run raster + Cosmos3 in this env")
+    fi.add_argument(
+        "--cosmos3-args", nargs=argparse.REMAINDER, default=[],
+        help="extra args for carla-transfer-cosmos3 (e.g. --revision fp8 --offload none)",
+    )  # fmt: skip
+    fi.set_defaults(fn=cmd_first_image)
+
     ao = sub.add_parser("add-obstacles")
     ao.add_argument("archive")
     ao.add_argument("tracks")
@@ -742,6 +784,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FILE.mp4",
         help="record the generated frames with the HD-map condition blended on top",
     )
+    r.add_argument(
+        "--record-compare",
+        metavar="FILE.mp4",
+        help="record [CARLA camera | HD-map condition | generated] side by side",
+    )
     add_sink_args(r)
     r.set_defaults(fn=cmd_run)
 
@@ -754,6 +801,8 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--duration", type=float, default=0.0)
     d.add_argument("--speed-pct", type=float, default=0.0,
                    help="Traffic Manager speed difference %% (negative = faster)")  # fmt: skip
+    d.add_argument("--target-speed", type=float, default=0.0,
+                   help="hero cruise speed km/h, ignores the limit (0 = off)")  # fmt: skip
     d.add_argument("--ignore-lights-pct", type=float, default=100.0)
     d.add_argument("--realtime", action=argparse.BooleanOptionalAction, default=True,
                    help="pace ticks at the configured fps")  # fmt: skip

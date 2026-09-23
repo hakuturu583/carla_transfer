@@ -115,3 +115,19 @@ def test_first_chunk_is_never_dropped():
     assert all(n == 8 for n in seen[1:])
     assert pipe.stats.chunks_dropped > 0
 
+
+def test_compare_sink_pairs_input_by_timestamp(monkeypatch, tmp_path):
+    from carla_transfer import sinks as S
+
+    written: list[np.ndarray] = []
+    monkeypatch.setattr(S.Mp4Sink, "__init__", lambda self, path, fps: None)
+    monkeypatch.setattr(S.Mp4Sink, "__call__", lambda self, f: written.append(f.rgb))
+    sink = S.CompareSink(tmp_path / "c.mp4", 30)
+    sink.add_input(Frame(np.full((96, 64, 3), 10, np.uint8), timestamp_us=100))
+    sink.add_input(Frame(np.full((96, 64, 3), 20, np.uint8), timestamp_us=200))
+    hd = np.full((96, 64, 3), 30, np.uint8)
+    sink(Frame(np.full((96, 64, 3), 40, np.uint8), 200, meta={"hdmap": hd}))
+    (out,) = written
+    assert out.shape == (96, 192, 3)
+    assert out[48, 32, 0] == 20 and out[48, 96, 0] == 30 and out[48, 160, 0] == 40
+    assert 100 not in sink._inputs

@@ -134,6 +134,31 @@ def run_cosmos3_local(work_dir: Path, job_args: list[str]) -> Path:
     return out / "first_image.png"
 
 
+def cosmos3_first_image(
+    cfg: TransferConfig,
+    archive: Path,
+    work_dir: Path,
+    local: bool = False,
+    cosmos3_args: list[str] | None = None,
+) -> Path:
+    """Control video of ``archive`` (map + its obstacles) → Cosmos3 transfer;
+    returns the generated first_image.png (not yet written to the archive)."""
+    control = work_dir / "control_wsm.mp4"
+    job_args = list(cosmos3_args or [])
+    # The control video must come from the *same camera model OmniDreams
+    # rasterizes with* (the archive calibration through ludus): the first
+    # image inherits its framing, and a control rendered with another
+    # camera (cosmos-transfer2.5's renderer) left every lane and car
+    # offset from the HD map for the whole rollout.
+    if local:
+        render_control_video_local(cfg, archive, control)
+    else:
+        render_control_video_docker(cfg, archive, control)
+    if local:
+        return run_cosmos3_local(work_dir, job_args)
+    return run_cosmos3_docker(cfg, work_dir, job_args)
+
+
 def prepare_scene(
     cfg: TransferConfig,
     xodr: Path,
@@ -163,22 +188,7 @@ def prepare_scene(
 
         first = first_image_from_clipgt(cfg.transfer25, clip_dir, clip_id, work_dir)
     elif first_image == "cosmos3":
-        control = work_dir / "control_wsm.mp4"
-        job_args = list(cosmos3_args or [])
-        # The control video must come from the *same camera model OmniDreams
-        # rasterizes with* (the archive calibration through ludus): the first
-        # image inherits its framing, and a control rendered with another
-        # camera (cosmos-transfer2.5's renderer) left every lane and car
-        # offset from the HD map for the whole rollout.
-        if local:
-            render_control_video_local(cfg, archive, control)
-        else:
-            render_control_video_docker(cfg, archive, control)
-        first = (
-            run_cosmos3_local(work_dir, job_args)
-            if local
-            else run_cosmos3_docker(cfg, work_dir, job_args)
-        )
+        first = cosmos3_first_image(cfg, archive, work_dir, local, cosmos3_args)
     else:
         raise ValueError(f"unknown first_image {first_image!r}")
     replace_in_archive(archive, "first_image.png", first.read_bytes())

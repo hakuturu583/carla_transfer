@@ -349,7 +349,8 @@ class TrackReplayer:
 def spawn_traffic(
     world, client, n_vehicles: int, tm_port: int, seed: int = 0, near=None, radius_m: float = 80.0
 ) -> list:
-    """Background vehicles on Traffic Manager autopilot.
+    """Background vehicles for Traffic Manager. Spawned without autopilot:
+    the caller lets them land (:func:`settle_actors`) and then enables it.
 
     With ``near`` (a carla.Location, normally the hero) the vehicles are
     placed on lane waypoints ahead of and opposite to it, plus the nearest
@@ -397,10 +398,52 @@ def spawn_traffic(
         tf.location.z += 0.3
         a = world.try_spawn_actor(bp, tf)
         if a is not None:
-            a.set_autopilot(True, tm_port)
             actors.append(a)
     log.info("spawned %d traffic vehicles", len(actors))
     return actors
+
+
+def settle_actors(
+    world,
+    vehicles: list,
+    walkers: list | None = None,
+    max_s: float = 5.0,
+    still_ticks: int = 15,
+) -> float:
+    """Tick with every vehicle braked until all of them rest on the ground.
+
+    Spawns are lifted (+0.3 m vehicles, +1 m walkers) so they do not clip into
+    the road; without this the first recorded frames show them in mid-air,
+    and those frames become the obstacles of the scene archive's first image
+    (Cosmos3 then renders floating cars). Vehicles count as settled once
+    their speed stays under 0.05 m/s for ``still_ticks`` ticks. Walkers'
+    kept transforms (the kinematic stepping reference) are dropped to where
+    physics put them. Returns the sim seconds it took.
+    """
+    import carla
+
+    dt = world.get_settings().fixed_delta_seconds or 0.05
+    brake = carla.VehicleControl(throttle=0.0, brake=1.0, hand_brake=True)
+    still = 0
+    n = 0
+    while n * dt < max_s:
+        for v in vehicles:
+            v.apply_control(brake)
+        world.tick()
+        n += 1
+        speeds = [v.get_velocity().length() for v in vehicles]
+        still = still + 1 if max(speeds, default=0.0) < 0.05 else 0
+        if still >= still_ticks:
+            break
+    else:
+        log.warning("vehicles still moving after %.1f s of settling", max_s)
+    for w, _ctrl, tf, *_ in walkers or []:
+        tf.location.z = w.get_location().z
+    for v in vehicles:
+        v.apply_control(carla.VehicleControl(hand_brake=False))
+    log.info("settled %d vehicles and %d walkers in %.2f s", len(vehicles),
+             len(walkers or []), n * dt)  # fmt: skip
+    return n * dt
 
 
 def spawn_walkers(
