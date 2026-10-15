@@ -1,0 +1,22 @@
+# carla_canvas configuration: a typesafe_carla program's RGB camera rendered by
+# OmniDreams (docs/carla_canvas.md). Read by the client plugin
+# (CARLA_CANVAS_CONFIG=configs/canvas.yaml typesafe-codon run main.py) and by
+# the renderer service (`carla-canvas serve`, or the canvas Docker image).
+renderer:
+  backend: carla_transfer.carla_canvas:CarlaTransferRenderer
+  endpoint: "localhost:50052"      # the canvas service (docker compose --profile canvas)
+  timeout: 120                     # per Render call: a chunk of the model
+  startup_timeout: 300             # LoadWorld opens the model session
+  assets:
+    maps:
+      "Town10HD*": {scene: ../outputs/scenes/town10.usdz}   # carla-transfer prepare-scene
+  options:
+    # world_model: "127.0.0.1:50051"   # default: $CARLA_TRANSFER_WORLD_MODEL
+    transfer_config: omnidreams_rtx3090.yaml
+    pose: camera                   # camera | vehicle
+    camera_model: pinhole          # pinhole | ftheta
+    pipelined_chunks: 0
+sensors:
+  - sensor.camera.rgb              # one camera: the model renders one view
+ros:
+  backend: auto

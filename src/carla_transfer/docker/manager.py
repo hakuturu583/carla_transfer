@@ -21,6 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DOCKER_DIR = REPO_ROOT / "docker"
 
 COSMOS3_IMAGE = "carla-transfer/cosmos3:latest"
+CANVAS_IMAGE = "carla-transfer/canvas:latest"
 
 
 def require_docker() -> None:
@@ -200,6 +201,8 @@ class ContainerManager:
         target = target or self.config.backend.value
         if target == "cosmos3":
             build_image(target, tag or COSMOS3_IMAGE)
+        elif target == "canvas":
+            build_image(target, tag or CANVAS_IMAGE)
         else:
             build_image(target, tag or self.d.image, self.d.build_args)
 

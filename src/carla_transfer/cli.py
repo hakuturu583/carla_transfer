@@ -777,7 +777,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     b = sub.add_parser("build")
-    b.add_argument("targets", nargs="*", help="omnidreams / cosmos3 (default: config backend)")
+    b.add_argument(
+        "targets", nargs="*", help="omnidreams / cosmos3 / canvas (default: config backend)"
+    )
     b.add_argument("--tag")
     b.set_defaults(fn=cmd_build)
 

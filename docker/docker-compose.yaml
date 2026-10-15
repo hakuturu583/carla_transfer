@@ -1,7 +1,12 @@
 # Alternative to `carla-transfer up`: docker compose -f docker/docker-compose.yaml --profile omnidreams up
+#
+# carla_canvas renderer (docs/carla_canvas.md): the world model plus the
+# carla_canvas service in front of it; CANVAS_DIR holds canvas.yaml and the
+# scene archives it names. Clients connect to <host>:${CANVAS_PORT:-50052}.
+#   CANVAS_DIR=$PWD docker compose -f docker/docker-compose.yaml --profile canvas up
 services:
   omnidreams:
-    profiles: ["omnidreams"]
+    profiles: ["omnidreams", "canvas"]
     build:
       context: ..
       dockerfile: docker/Dockerfile.omnidreams
@@ -9,7 +14,7 @@ services:
     container_name: carla-transfer-omnidreams
     ipc: host
     shm_size: 16g
-    ports: ["50051:50051"]
+    ports: ["${OMNIDREAMS_PORT:-50051}:50051"]
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
     volumes:
@@ -22,6 +27,23 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
+  canvas:
+    profiles: ["canvas"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.canvas
+    image: carla-transfer/canvas:latest
+    container_name: carla-transfer-canvas
+    depends_on: [omnidreams]
+    ports: ["${CANVAS_PORT:-50052}:50051"]
+    environment:
+      CARLA_TRANSFER_WORLD_MODEL: omnidreams:50051
+    volumes:
+      # canvas.yaml and its archives (default: canvas/ in the repo root)
+      - ${CANVAS_DIR:-../canvas}:/config:ro
+    # For the ROS 2 topics (DDS discovery) use the host network instead of the
+    # port mapping: network_mode: host, CARLA_TRANSFER_WORLD_MODEL: 127.0.0.1:50051.
 
   cosmos3:
     profiles: ["cosmos3"]
