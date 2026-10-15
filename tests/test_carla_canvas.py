@@ -364,3 +364,85 @@ def test_one_camera_at_a_time(tmp_path):
     render(6, 10)  # 5 is gone: a new session for 6
     assert r._session is not session and r._session.sensor_id == 6
     r.close()
+
+
+def test_transfer_config_port_is_kept_when_only_the_host_defaults(tmp_path, monkeypatch):
+    from carla_canvas.renderer import WorldInfo
+
+    monkeypatch.delenv("CARLA_TRANSFER_WORLD_MODEL", raising=False)
+    (tmp_path / "t.yaml").write_text("backend: mock\nomnidreams: {port: 50099}\n")
+    r = CarlaTransferRenderer({"transfer_config": "t.yaml"})
+    cfg = r._transfer_config(WorldInfo("Carla/Maps/Town01", 1, {}, tmp_path))
+    assert (cfg.omnidreams.host, cfg.omnidreams.port) == ("127.0.0.1", 50099)
+    r.options["world_model"] = "model:6000"  # an explicit endpoint wins
+    cfg = r._transfer_config(WorldInfo("Carla/Maps/Town01", 1, {}, tmp_path))
+    assert (cfg.omnidreams.host, cfg.omnidreams.port) == ("model", 6000)
+
+
+class _HangingBackend:
+    """generate() blocks until close() (like a gRPC call whose channel closes),
+    or forever with stubborn=True."""
+
+    frames_per_chunk, first_chunk_frames = 8, 5
+
+    def __init__(self, stubborn=False):
+        import threading
+
+        self.closed = threading.Event()
+        self.stubborn = stubborn
+        self.release = threading.Event()  # lets a stubborn generate() end at teardown
+
+    def chunk_size(self, index):
+        return self.first_chunk_frames if index == 0 else self.frames_per_chunk
+
+    def wait_ready(self, timeout_s):
+        pass
+
+    def open(self, frame):
+        pass
+
+    def generate(self, frames):
+        (self.release if self.stubborn else self.closed).wait()
+        raise RuntimeError("cancelled")
+
+    def close(self):
+        self.closed.set()
+
+
+@pytest.mark.parametrize("stubborn", [False, True])
+def test_closing_a_session_does_not_wait_forever_for_a_generation(tmp_path, stubborn):
+    import time
+
+    from carla_canvas.geometry import PinholeCamera
+    from carla_canvas.renderer import CameraView, WorldInfo
+    from carla_canvas.scene import Scene
+
+    backends = []
+
+    def factory(config):
+        backends.append(_HangingBackend(stubborn))
+        return backends[-1]
+
+    r = CarlaTransferRenderer(
+        {"backend": "mock", "width": 32, "height": 18, "generate_timeout": 0.2,
+         "close_timeout": 0.5}
+    )  # fmt: skip
+    r.backend_factory = factory
+    r.load_world(WorldInfo("Carla/Maps/Town01", 1, {}, tmp_path))
+    scene = Scene()
+    try:
+        # tick 7 waits for the first chunk (concurrent.futures' TimeoutError: py3.10)
+        with pytest.raises(futures.TimeoutError):
+            for k in range(8):
+                scene.frame, scene.elapsed_seconds = k, k / 30
+                r.render_camera(
+                    CameraView(PinholeCamera(32, 18, 90.0), scene, frozenset({"rgb"}), 5)
+                )
+        t0 = time.monotonic()
+        r.load_world(WorldInfo("Carla/Maps/Town01", 2, {}, tmp_path))  # closes the session
+        assert time.monotonic() - t0 < 3.0
+        assert backends[0].closed.is_set() and len(backends) == 2
+        r.close()
+    finally:
+        for b in backends:
+            b.release.set()

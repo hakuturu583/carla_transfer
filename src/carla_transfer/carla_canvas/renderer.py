@@ -35,6 +35,8 @@ Configuration (carla_canvas's file, ``CARLA_CANVAS_CONFIG``)::
         camera_model: pinhole          # pinhole | ftheta
         pipelined_chunks: 0            # >0: generate behind the ticks (8 more ticks of delay each)
         world_model_wait: 30           # seconds LoadWorld waits for the model server
+        generate_timeout: 600          # seconds a tick waits for its chunk
+        close_timeout: 10              # seconds a session's close waits for a generation
         archive_camera: {position: [1.7, 0.0, 1.45], roll_pitch_yaw: [0, 0, 0], fov: 120}
 
 One camera per renderer: the model runs one session on one GPU.
@@ -48,6 +50,7 @@ import os
 import threading
 import zipfile
 from collections.abc import Callable
+from concurrent import futures
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from importlib import metadata
@@ -181,9 +184,13 @@ class CarlaTransferRenderer(Renderer):
             raise ValueError("carla_canvas renders with the omnidreams (or mock) backend")
         od = _merge(raw.get("omnidreams") or {}, dict(o.get("omnidreams") or {}))
         endpoint = o.get("world_model") or os.environ.get(ENV_WORLD_MODEL)
-        if endpoint or "host" not in od:
-            host, _, port = str(endpoint or DEFAULT_WORLD_MODEL).rpartition(":")
+        default_host, _, default_port = DEFAULT_WORLD_MODEL.rpartition(":")
+        if endpoint:
+            host, _, port = str(endpoint).rpartition(":")
             od["host"], od["port"] = host, int(port)
+        else:  # what the transfer config leaves out
+            od.setdefault("host", default_host)
+            od.setdefault("port", int(default_port))
         scene = self._scene_archive(world)
         if scene is not None:
             od["scene_archive"] = str(scene)
@@ -228,13 +235,22 @@ class CarlaTransferRenderer(Renderer):
             return
         for chunk in session.chunks:
             chunk.future.cancel()
-        for chunk in session.chunks:
-            if not chunk.future.cancelled():
-                try:
-                    chunk.future.result()
-                except Exception:  # noqa: BLE001 - the session is going away
-                    pass
-        session.backend.close()
+        running = [c.future for c in session.chunks if not c.future.done()]
+        # Closing the client first ends a chunk call in flight (its channel
+        # closes); then wait for the worker, bounded: a generation that still
+        # does not return is abandoned with its executor.
+        try:
+            session.backend.close()
+        except Exception:  # noqa: BLE001 - the session is going away
+            log.exception("closing the world-model session failed")
+        if running:
+            _, pending = futures.wait(
+                running, timeout=float(self.options.get("close_timeout", 10.0))
+            )
+            if pending and self._executor is not None:
+                log.warning("a generation did not stop: abandoning its worker thread")
+                self._executor.shutdown(wait=False, cancel_futures=True)
+                self._executor = None
 
     def _session_for(self, sensor_id: int, frame: int) -> _Session:
         session = self._session
