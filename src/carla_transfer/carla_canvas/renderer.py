@@ -120,6 +120,9 @@ class CarlaTransferRenderer(Renderer):
     name = "carla_transfer"
     version = _version()
     camera_outputs = frozenset({"rgb"})
+    # OmniDreams' rig poses are right-handed FLU in the archive's OpenDRIVE
+    # frame: carla_canvas hands the views' poses over in it.
+    coordinate_frame = "right_handed"
 
     def __init__(self, options: dict[str, Any] | None = None) -> None:
         super().__init__(options)
@@ -259,10 +262,10 @@ class CarlaTransferRenderer(Renderer):
     def rig_pose(self, view: CameraView) -> np.ndarray:
         """4x4 rig-to-world (OpenDRIVE frame, FLU) for the model."""
         if self.pose_source == "vehicle":
-            vehicle = view.scene.parent_transform(view.sensor_id)
+            vehicle = view.parent_matrix()
             if vehicle is not None:
-                return vehicle.right_handed_matrix()
-        return self.archive_camera.rig_from_camera(view.camera.pose.right_handed_matrix())
+                return vehicle
+        return self.archive_camera.rig_from_camera(view.pose_matrix())
 
     def render_camera(self, view: CameraView) -> CameraFrame:
         with self._lock:

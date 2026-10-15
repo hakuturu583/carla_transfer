@@ -25,7 +25,7 @@ program gets CARLA's topics with the generated images.
 |---|---|
 | sensors | `sensor.camera.rgb`, one camera (one model session on one GPU). Depth, segmentation and LiDARs stay CARLA's (list only the camera under `sensors:`) |
 | poses | `pose: camera` (default): the rig is placed so that the archive's camera (`archive_camera`, the clipgt calibration: 1.7 m ahead, 1.45 m up, 120° f-theta) is exactly at the CARLA camera's pose. `pose: vehicle`: the camera's parent vehicle is the rig, the camera is the archive's mount (what `carla-transfer run` does) |
-| frame | the sensor's (or vehicle's) CARLA world transform from carla_canvas's snapshot, converted by carla_canvas (`Transform.right_handed_matrix()`) to the OpenDRIVE frame (y negated) the archive is in: archives from `carla-transfer prepare-scene` / `export-map` of the same map. Only the rig offset (`archive_camera`) is computed here |
+| frame | the sensor's (or vehicle's) CARLA world transform from carla_canvas's snapshot, converted by carla_canvas into the OpenDRIVE frame (y negated) the archive is in, since the renderer declares `coordinate_frame = "right_handed"`: archives from `carla-transfer prepare-scene` / `export-map` of the same map. Only the rig offset (`archive_camera`) is computed here |
 | images | `camera_model: pinhole` (default): the model's f-theta image resampled into the CARLA camera's fov and size (a camera wider than the model's coverage gets black borders, logged); `ftheta`: resized only |
 | timing | timestamps are sim time since the session's first tick; set `fixed_delta_seconds` to `1 / fps` of the model (30 Hz) |
 

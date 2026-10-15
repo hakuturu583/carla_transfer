@@ -2,8 +2,8 @@
 
 numpy only (no gRPC), unit-tested in tests/test_carla_canvas.py.
 
-* carla_canvas hands the renderer CARLA world poses and converts them
-  (:func:`carla_canvas.geometry.right_handed`): a scene archive made by
+* the renderer declares ``coordinate_frame = "right_handed"`` and carla_canvas
+  hands its views' poses over in that frame: a scene archive made by
   ``carla-transfer prepare-scene`` is in the map's OpenDRIVE frame, CARLA's
   with y negated, and OmniDreams takes rig-to-world poses with the body x
   forward / y left / z up. What is OmniDreams' own is the rig: the model

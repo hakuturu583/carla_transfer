@@ -47,7 +47,7 @@ def test_canvas_pose_matches_pose_from_transform(rot):
         rotation=SimpleNamespace(pitch=rot[0], yaw=rot[1], roll=rot[2]),
     )
     expected = pose_from_transform(fake)
-    m = t.right_handed_matrix()
+    m = t.matrix("right_handed")
     assert np.allclose(m[:3, 3], expected.xyz)
     assert np.allclose(m[:3, :3], quat_xyzw_to_matrix(expected.quat_xyzw), atol=1e-6)
     assert np.isclose(np.linalg.det(m[:3, :3]), 1.0)
@@ -57,11 +57,11 @@ def test_canvas_pose_matches_pose_from_transform(rot):
 
 def test_rig_from_camera_puts_the_archive_camera_on_the_carla_camera():
     cam = ArchiveCamera(position=(1.7, 0.2, 1.45), roll_pitch_yaw=(0, -5, 3))
-    carla_cam = Transform((30.0, 4.0, 2.1), (-8.0, 60.0, 0.0)).right_handed_matrix()
+    carla_cam = Transform((30.0, 4.0, 2.1), (-8.0, 60.0, 0.0)).matrix("right_handed")
     rig = cam.rig_from_camera(carla_cam)
     assert np.allclose(rig @ cam.camera_to_rig(), carla_cam)
     # a level camera on the default mount: the rig is 1.45 m below it
-    rig = ArchiveCamera().rig_from_camera(Transform((0, 0, 1.45)).right_handed_matrix())
+    rig = ArchiveCamera().rig_from_camera(Transform((0, 0, 1.45)).matrix("right_handed"))
     assert np.allclose(rig[:3, 3], (-1.7, 0.0, 0.0))
 
 
