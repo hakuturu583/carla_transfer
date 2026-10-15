@@ -17,7 +17,7 @@ import pytest
 pytest.importorskip("carla_canvas")
 
 from carla_canvas.config import CanvasConfig, RosConfig  # noqa: E402
-from carla_canvas.geometry import Transform  # noqa: E402
+from carla_canvas.geometry import Transform, quaternion_xyzw  # noqa: E402
 from carla_canvas.server import start  # noqa: E402
 from carla_canvas.v1 import renderer_pb2 as pb  # noqa: E402
 from carla_canvas.v1 import renderer_pb2_grpc as pb_grpc  # noqa: E402
@@ -27,8 +27,6 @@ from carla_transfer.carla_canvas.frames import (  # noqa: E402
     ArchiveCamera,
     FThetaToPinhole,
     delivery_delay,
-    flu_from_carla,
-    quat_xyzw,
 )
 from carla_transfer.carla_canvas.renderer import CarlaTransferRenderer  # noqa: E402
 from carla_transfer.frames import encode_image  # noqa: E402
@@ -40,8 +38,8 @@ from carla_transfer.server.geometry import quat_xyzw_to_matrix  # noqa: E402
 
 
 @pytest.mark.parametrize("rot", [(0, 0, 0), (10, 30, -5), (-20, 135, 40), (5, -90, 0)])
-def test_flu_from_carla_matches_pose_from_transform(rot):
-    """The renderer's CARLA → OpenDRIVE conversion is the one `run` uses."""
+def test_canvas_pose_matches_pose_from_transform(rot):
+    """carla_canvas's CARLA → right-handed conversion is the one `run` uses."""
     loc = (12.0, -3.5, 1.2)
     t = Transform(loc, rot)
     fake = SimpleNamespace(
@@ -49,21 +47,21 @@ def test_flu_from_carla_matches_pose_from_transform(rot):
         rotation=SimpleNamespace(pitch=rot[0], yaw=rot[1], roll=rot[2]),
     )
     expected = pose_from_transform(fake)
-    m = flu_from_carla(t.matrix())
+    m = t.right_handed_matrix()
     assert np.allclose(m[:3, 3], expected.xyz)
     assert np.allclose(m[:3, :3], quat_xyzw_to_matrix(expected.quat_xyzw), atol=1e-6)
     assert np.isclose(np.linalg.det(m[:3, :3]), 1.0)
-    q = quat_xyzw(m[:3, :3])
+    q = quaternion_xyzw(m[:3, :3])
     assert np.allclose(quat_xyzw_to_matrix(q), m[:3, :3], atol=1e-6)
 
 
 def test_rig_from_camera_puts_the_archive_camera_on_the_carla_camera():
     cam = ArchiveCamera(position=(1.7, 0.2, 1.45), roll_pitch_yaw=(0, -5, 3))
-    carla_cam = flu_from_carla(Transform((30.0, 4.0, 2.1), (-8.0, 60.0, 0.0)).matrix())
+    carla_cam = Transform((30.0, 4.0, 2.1), (-8.0, 60.0, 0.0)).right_handed_matrix()
     rig = cam.rig_from_camera(carla_cam)
     assert np.allclose(rig @ cam.camera_to_rig(), carla_cam)
     # a level camera on the default mount: the rig is 1.45 m below it
-    rig = ArchiveCamera().rig_from_camera(flu_from_carla(Transform((0, 0, 1.45)).matrix()))
+    rig = ArchiveCamera().rig_from_camera(Transform((0, 0, 1.45)).right_handed_matrix())
     assert np.allclose(rig[:3, 3], (-1.7, 0.0, 0.0))
 
 

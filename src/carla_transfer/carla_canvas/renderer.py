@@ -59,6 +59,7 @@ import yaml
 
 try:
     from carla_canvas import CameraFrame, CameraView, Renderer, WorldInfo
+    from carla_canvas.geometry import quaternion_xyzw
 except ImportError:
     raise ImportError(
         "carla_transfer.carla_canvas requires carla_canvas.\n"
@@ -70,8 +71,6 @@ from carla_transfer.carla_canvas.frames import (
     ArchiveCamera,
     FThetaToPinhole,
     delivery_delay,
-    flu_from_carla,
-    quat_xyzw,
     resize,
 )
 from carla_transfer.config import TransferConfig
@@ -259,13 +258,11 @@ class CarlaTransferRenderer(Renderer):
 
     def rig_pose(self, view: CameraView) -> np.ndarray:
         """4x4 rig-to-world (OpenDRIVE frame, FLU) for the model."""
-        scene = view.scene
         if self.pose_source == "vehicle":
-            info = scene.actors.get(view.sensor_id)
-            parent = info.parent_id if info is not None else 0
-            if parent and parent in scene.states:
-                return flu_from_carla(scene.transform(parent).matrix())
-        return self.archive_camera.rig_from_camera(flu_from_carla(view.camera.pose.matrix()))
+            vehicle = view.scene.parent_transform(view.sensor_id)
+            if vehicle is not None:
+                return vehicle.right_handed_matrix()
+        return self.archive_camera.rig_from_camera(view.camera.pose.right_handed_matrix())
 
     def render_camera(self, view: CameraView) -> CameraFrame:
         with self._lock:
@@ -284,7 +281,7 @@ class CarlaTransferRenderer(Renderer):
             session.t0 = view.scene.elapsed_seconds
         t_us = int(round((view.scene.elapsed_seconds - session.t0) * 1e6))
         rig = self.rig_pose(view)
-        pose = Pose(tuple(float(v) for v in rig[:3, 3]), quat_xyzw(rig[:3, :3]))
+        pose = Pose(tuple(float(v) for v in rig[:3, 3]), quaternion_xyzw(rig[:3, :3]))
         session.pending.append(Frame(_NO_IMAGE, t_us, pose, {"carla_frame": view.scene.frame}))
         index = session.ticks
         session.ticks += 1

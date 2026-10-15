@@ -33,15 +33,15 @@ video = ["imageio>=2.34", "imageio-ffmpeg>=0.5"]
 # The carla_canvas renderer backend (src/carla_transfer/carla_canvas,
 # docs/carla_canvas.md): `carla-canvas serve` with
 # `backend: carla_transfer.carla_canvas:CarlaTransferRenderer`.
-carla_canvas = ["carla-canvas>=0.1.1"]
+carla_canvas = ["carla-canvas>=0.2.0"]
 # ... with its ROS 2 output (CycloneDDS, no ROS installation needed).
-carla_canvas_ros = ["carla-canvas[ros]>=0.1.1"]
+carla_canvas_ros = ["carla-canvas[ros]>=0.2.0"]
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
     "ruff>=0.6",
     "grpcio-tools>=1.60",
-    "carla-canvas>=0.1.1",
+    "carla-canvas>=0.2.0",
 ]
 
 [project.scripts]

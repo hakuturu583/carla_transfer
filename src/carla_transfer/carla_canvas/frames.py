@@ -1,13 +1,14 @@
 """CARLA poses → OmniDreams rig poses, and the model's camera → CARLA's.
 
-numpy only (no carla_canvas, no gRPC), unit-tested in tests/test_carla_canvas.py.
+numpy only (no gRPC), unit-tested in tests/test_carla_canvas.py.
 
-* carla_canvas hands the renderer CARLA poses: Unreal's left-handed frame (x
-  forward, y right, z up), a 4x4 whose rotation columns are the body's
-  forward, right and up axes. OmniDreams takes rig-to-world poses in a
-  right-handed x forward / y left / z up frame. A scene archive made by
-  ``carla-transfer prepare-scene`` is in the map's OpenDRIVE frame, which is
-  CARLA's with y negated (as :func:`carla_transfer.carla.source.pose_from_transform`).
+* carla_canvas hands the renderer CARLA world poses and converts them
+  (:func:`carla_canvas.geometry.right_handed`): a scene archive made by
+  ``carla-transfer prepare-scene`` is in the map's OpenDRIVE frame, CARLA's
+  with y negated, and OmniDreams takes rig-to-world poses with the body x
+  forward / y left / z up. What is OmniDreams' own is the rig: the model
+  renders the archive's camera at its mount, so :class:`ArchiveCamera` gives
+  the rig pose that puts it on a CARLA camera.
 * The model renders the archive's camera: f-theta (``r = f * theta``,
   ``f = (width / 2) / (fov / 2)``), mounted on the rig at the clipgt
   calibration. :class:`FThetaToPinhole` resamples it into CARLA's pinhole
@@ -23,18 +24,6 @@ import numpy as np
 from numpy.typing import NDArray
 
 Array = NDArray[np.float64]
-
-_FLIP_Y = np.diag([1.0, -1.0, 1.0])
-
-
-def flu_from_carla(carla_pose: Array) -> Array:
-    """4x4 body-to-world in the OpenDRIVE frame (FLU body, right-handed) of a
-    4x4 CARLA pose (Unreal: columns forward, right, up)."""
-    m = np.asarray(carla_pose, dtype=np.float64)
-    out = np.eye(4)
-    out[:3, :3] = _FLIP_Y @ m[:3, :3] @ _FLIP_Y
-    out[:3, 3] = _FLIP_Y @ m[:3, 3]
-    return out
 
 
 def rotation_rpy(roll_pitch_yaw_deg) -> Array:
@@ -78,47 +67,6 @@ class ArchiveCamera:
         """The rig pose that puts this camera at ``camera_flu`` (FLU, x along
         the optical axis): the model then renders from the CARLA camera's pose."""
         return np.asarray(camera_flu, dtype=np.float64) @ np.linalg.inv(self.camera_to_rig())
-
-
-def quat_xyzw(rotation: Array) -> tuple[float, float, float, float]:
-    """``(x, y, z, w)`` of a proper rotation matrix, w >= 0."""
-    r = np.asarray(rotation, dtype=np.float64)
-    trace = r[0, 0] + r[1, 1] + r[2, 2]
-    if trace > 0:
-        s = 2.0 * math.sqrt(trace + 1.0)
-        w, x, y, z = (
-            0.25 * s,
-            (r[2, 1] - r[1, 2]) / s,
-            (r[0, 2] - r[2, 0]) / s,
-            (r[1, 0] - r[0, 1]) / s,
-        )
-    elif r[0, 0] > r[1, 1] and r[0, 0] > r[2, 2]:
-        s = 2.0 * math.sqrt(1.0 + r[0, 0] - r[1, 1] - r[2, 2])
-        w, x, y, z = (
-            (r[2, 1] - r[1, 2]) / s,
-            0.25 * s,
-            (r[0, 1] + r[1, 0]) / s,
-            (r[0, 2] + r[2, 0]) / s,
-        )
-    elif r[1, 1] > r[2, 2]:
-        s = 2.0 * math.sqrt(1.0 + r[1, 1] - r[0, 0] - r[2, 2])
-        w, x, y, z = (
-            (r[0, 2] - r[2, 0]) / s,
-            (r[0, 1] + r[1, 0]) / s,
-            0.25 * s,
-            (r[1, 2] + r[2, 1]) / s,
-        )
-    else:
-        s = 2.0 * math.sqrt(1.0 + r[2, 2] - r[0, 0] - r[1, 1])
-        w, x, y, z = (
-            (r[1, 0] - r[0, 1]) / s,
-            (r[0, 2] + r[2, 0]) / s,
-            (r[1, 2] + r[2, 1]) / s,
-            (0.25 * s),
-        )
-    if w < 0:
-        w, x, y, z = -w, -x, -y, -z
-    return float(x), float(y), float(z), float(w)
 
 
 class FThetaToPinhole:
