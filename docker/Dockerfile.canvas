@@ -1,0 +1,49 @@
+# carla_canvas renderer service for carla_transfer (docs/carla_canvas.md).
+#
+# `carla-canvas serve` with renderer.backend
+# carla_transfer.carla_canvas:CarlaTransferRenderer: a typesafe_carla
+# program's RGB camera is rendered by the OmniDreams world model, which runs
+# in its own container (Dockerfile.omnidreams, the GPU one). This image needs
+# no GPU: it turns camera ticks into poses, calls the model over gRPC and
+# resamples its frames into the CARLA camera.
+#
+# Build (context = repo root):
+#   carla-transfer build canvas
+#   == docker build -f docker/Dockerfile.canvas -t carla-transfer/canvas:latest .
+# Run both (CANVAS_DIR holds canvas.yaml and its scene archives):
+#   CANVAS_DIR=$PWD docker compose -f docker/docker-compose.yaml --profile canvas up
+ARG PYTHON_VERSION=3.12
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.12.0
+FROM ${UV_IMAGE} AS uv
+FROM python:${PYTHON_VERSION}-slim
+
+COPY --from=uv /uv /uvx /usr/local/bin/
+
+ENV UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/opt/venv
+
+# carla_canvas_ros: the ROS 2 topics of enable_for_ros() sensors over
+# CycloneDDS (run with network_mode: host for DDS discovery); carla_canvas
+# alone without them.
+ARG EXTRA=carla_canvas_ros
+
+WORKDIR /opt/carla_transfer
+# Dependencies first (layer cache), then the package.
+COPY pyproject.toml uv.lock README.md ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --extra "${EXTRA}" --no-install-project
+COPY src/ src/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --extra "${EXTRA}" --no-editable
+
+ENV PATH="/opt/venv/bin:${PATH}" \
+    CARLA_CANVAS_CONFIG=/config/canvas.yaml \
+    CARLA_TRANSFER_WORLD_MODEL=omnidreams:50051
+
+# Asset paths in canvas.yaml are relative to it: mount its directory at
+# /config. CARLA_TRANSFER_WORLD_MODEL is where the OmniDreams server answers
+# (the compose service name; options.world_model in canvas.yaml wins).
+WORKDIR /config
+EXPOSE 50051
+CMD ["carla-canvas", "serve", "--endpoint", "0.0.0.0:50051"]

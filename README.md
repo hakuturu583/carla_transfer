@@ -14,6 +14,25 @@ CARLA (sync mode) ──RGB+pose──▶ StreamPipeline ──gRPC/HTTP──�
 The model never runs in this process. `carla_transfer` is the host-side
 client, container manager, and real-time loop.
 
+## carla_canvas backend
+
+carla_transfer can also render the RGB camera of an unchanged
+[typesafe_carla](https://github.com/hakuturu583/typesafe_carla) program through
+[carla_canvas](https://github.com/hakuturu583/carla_canvas)
+(`renderer.backend: carla_transfer.carla_canvas:CarlaTransferRenderer`): each
+camera tick becomes a pose for OmniDreams, and its frames come back as the
+camera's `carla.Image` (and ROS 2 topic), resampled into the CARLA camera.
+
+```bash
+carla-transfer build omnidreams canvas
+CANVAS_DIR=$PWD/canvas docker compose -f docker/docker-compose.yaml --profile canvas up
+# on the client: renderer.endpoint: "<gpu-host>:50052" in its canvas.yaml
+CARLA_CANVAS_CONFIG=canvas.yaml typesafe-codon run main.py
+```
+
+See [docs/carla_canvas.md](docs/carla_canvas.md) and
+[configs/canvas.yaml](configs/canvas.yaml).
+
 ## Layout
 
 ```
@@ -37,8 +56,10 @@ src/carla_transfer/
     cosmos3_transfer.py   Cosmos3 transfer (world-scenario hint) → first_image.png
   docker/carla.py    CARLA server container, off-screen at -quality-level=Low
   protos/omnidreams/ vendored OmniDreams .proto + generated stubs (scripts/compile_protos.sh)
-docker/              Dockerfile.omnidreams, Dockerfile.cosmos3, docker-compose.yaml
-configs/             omnidreams_rtx3090.yaml, cosmos3_nano.yaml, mock.yaml
+  carla_canvas/      carla_canvas renderer backend: camera ticks → rig poses → OmniDreams,
+                     f-theta → CARLA pinhole (docs/carla_canvas.md)
+docker/              Dockerfile.omnidreams, Dockerfile.cosmos3, Dockerfile.canvas, docker-compose.yaml
+configs/             omnidreams_rtx3090.yaml, cosmos3_nano.yaml, mock.yaml, canvas.yaml
 ```
 
 ## Install
@@ -47,6 +68,7 @@ configs/             omnidreams_rtx3090.yaml, cosmos3_nano.yaml, mock.yaml
 uv sync --extra dev            # library + tests
 uv sync --extra display --extra video   # cv2 window + mp4 recording
 uv sync --extra carla          # CARLA python client (needs a CARLA 0.9.16 server)
+uv sync --extra carla_canvas   # carla_canvas renderer backend (carla_canvas_ros: + ROS 2 output)
 ```
 
 ## Run

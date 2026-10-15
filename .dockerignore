@@ -1,0 +1,10 @@
+.venv/
+.git/
+outputs/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.mp4
+.env
