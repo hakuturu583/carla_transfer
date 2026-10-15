@@ -102,7 +102,7 @@ wheels = [
 
 [[package]]
 name = "carla-canvas"
-version = "0.1.1"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "grpcio" },
@@ -112,10 +112,10 @@ dependencies = [
     { name = "protobuf" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/da/5b/842e69a7e7073049197f585b3994f4b0fc5a890dfc7825f88e60c20a2729/carla_canvas-0.1.1.tar.gz", hash = "sha256:3234dbc69df3d2283a1ab034b91e931cde538d6e98b08b2397b457c247b029e8", size = 98167, upload-time = "2026-10-15T13:48:56.844Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ed/f3/ecebb8bd0805cb1f630dcfb2be05139365afb0b4f8aa158dd656b76b3f4e/carla_canvas-0.2.0.tar.gz", hash = "sha256:8b566a10f4d516f7c404dd4e1ad6b6c6bfaf379425ee603f70cf00cb2a193072", size = 102313, upload-time = "2026-10-15T23:32:55.053Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bb/d1/5dd575e45ee9ea9387a3339cf1d95a543c018d167587df43c1285b8d8da5/carla_canvas-0.1.1-py3-none-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:f5b06cb6d91c65f4142b297e4cd83d3df1bd2ad577136c42f540a8ac93efee11", size = 7140297, upload-time = "2026-10-15T13:48:52.768Z" },
-    { url = "https://files.pythonhosted.org/packages/1c/b9/fd16df1954cbee88c311d5341513da4aabb1233404fb38253b869cd9ca91/carla_canvas-0.1.1-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:10a94211e6068323500e2be624795bc21edb98c525e178321249b21c9ea4a546", size = 7955694, upload-time = "2026-10-15T13:48:55.001Z" },
+    { url = "https://files.pythonhosted.org/packages/74/61/c70bee6db21b80b148b3bc7de9c2af593a70e8b548d92fdaf24c3b4ddd80/carla_canvas-0.2.0-py3-none-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:baa5ebfe296bdd2391f7a76b5d5bc8846e396d67aaa7b5804f23a1be85b5fd2f", size = 7142315, upload-time = "2026-10-15T23:32:51.136Z" },
+    { url = "https://files.pythonhosted.org/packages/75/41/1e0b1516634af03e5d17114e74a335bff40317d4d5bddfef57e2f4705158/carla_canvas-0.2.0-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:d904a5a6fc30427bcaae90538140b59f5366cca926b7166eff58b3ed83fe2494", size = 7957709, upload-time = "2026-10-15T23:32:53.101Z" },
 ]
 
 [package.optional-dependencies]
@@ -171,9 +171,9 @@ video = [
 [package.metadata]
 requires-dist = [
     { name = "av", specifier = ">=12" },
-    { name = "carla-canvas", marker = "extra == 'carla-canvas'", specifier = ">=0.1.1" },
-    { name = "carla-canvas", marker = "extra == 'dev'", specifier = ">=0.1.1" },
-    { name = "carla-canvas", extras = ["ros"], marker = "extra == 'carla-canvas-ros'", specifier = ">=0.1.1" },
+    { name = "carla-canvas", marker = "extra == 'carla-canvas'", specifier = ">=0.2.0" },
+    { name = "carla-canvas", marker = "extra == 'dev'", specifier = ">=0.2.0" },
+    { name = "carla-canvas", extras = ["ros"], marker = "extra == 'carla-canvas-ros'", specifier = ">=0.2.0" },
     { name = "grpcio", specifier = ">=1.60" },
     { name = "grpcio-tools", marker = "extra == 'dev'", specifier = ">=1.60" },
     { name = "httpx", specifier = ">=0.27" },
